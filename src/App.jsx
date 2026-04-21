@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // UI Components
@@ -11,9 +11,14 @@ import DetachedChat from './components/UI/DetachedChat';
 // Hooks
 import { useGlobalHotkeys } from './hooks/useGlobalHotkeys';
 import { useDiscordBridge } from './hooks/useDiscordBridge';
+import LiveCanvas from './components/UI/LiveCanvas';
+import { channelManager } from './services/channels/ChannelManager';
 
 import { llmRouter } from './services/llm/Router';
 import { agentLoop } from './services/agent/AgentLoop';
+import { cronEngine } from './services/watchers/CronEngine';
+import { scheduler } from './services/scheduler/Scheduler';
+import { consolidationLoop } from './services/memory2/ConsolidationLoop';
 import { soulLoader } from './services/soul/SoulLoader';
 import { mcpLoader } from './services/agent/MCPLoader';
 import { watcherEngine } from './services/watchers/WatcherEngine';
@@ -84,6 +89,9 @@ function App() {
   const [showDebugBorder, setShowDebugBorder] = useState(false);
   const [pendingEvolution, setPendingEvolution] = useState(null);
 
+  // Mutable ref so cron/scheduler callbacks always call the latest handleCommand
+  const handleCommandRef = useRef(null);
+
   // --- Store Selectors (Follow Rules of Hooks) ---
   const innerWorldOpen = useInnerWorldStore(s => s.isOpen);
   const setInnerWorldOpen = useInnerWorldStore(s => s.setOpen);
@@ -130,6 +138,25 @@ function App() {
     return p ? (p.messages || []) : [];
   }, [projects, activeProjectId]);
 
+  // --- Session Restoration ---
+  // Runs once per app launch. If zustand-persisted messages from a prior session
+  // exist, inject a system note so the user (and LLM) knows context was restored.
+  useEffect(() => {
+    if (sessionStorage.getItem('session_initialized')) return;
+    sessionStorage.setItem('session_initialized', '1');
+
+    const state = useMemoryStore.getState();
+    const project = state.projects?.find(p => p.id === state.activeProjectId);
+    const existing = (project?.messages || []).filter(m => m.role !== 'system');
+    if (existing.length >= 2) {
+      addMessage({
+        role: 'system',
+        content: `Session restored — ${existing.length} message${existing.length !== 1 ? 's' : ''} from your previous session are loaded as context.`,
+        id: Date.now()
+      });
+    }
+  }, []);
+
   // --- Soul Loader Init ---
   useEffect(() => {
     soulLoader.load().catch(e => console.warn('[App] SoulLoader init failed:', e));
@@ -145,9 +172,11 @@ function App() {
   // --- Background Service Initialization ---
   useEffect(() => {
     watcherEngine.start();
-    // Audio Graph Init (Lazy)
-    // We don't start input automatically unless 'always-listening' is set?
-    // For safety, let's keep it manual start via Settings for now, OR if voiceMode is 'always-listening'.
+    consolidationLoop.start(useMemoryStore);
+
+    // Wire cron job execution — always reads latest handleCommand via ref
+    cronEngine.onFire = (intent) => handleCommandRef.current?.(intent);
+
     if (voiceMode === 'always-listening') {
       audioGraph.startInput(inputDeviceId).catch(err => console.error("Audio Start Failed:", err));
     }
@@ -155,6 +184,8 @@ function App() {
     return () => {
       watcherEngine.stop();
       audioGraph.stopInput();
+      consolidationLoop.stop();
+      cronEngine.onFire = null;
     };
   }, []);
 
@@ -217,8 +248,26 @@ function App() {
     }
   }, [messages]);
 
-  // --- Discord Bridge (runs while app is open) ---
+  // --- Discord Bridge ---
   const { isConnected: discordConnected } = useDiscordBridge();
+
+  // --- Telegram / Channel Bridge ---
+  const { telegramEnabled, telegramBotToken, telegramUserId } = useSettingsStore();
+  useEffect(() => {
+    if (!telegramEnabled || !telegramBotToken) return;
+    channelManager.start({
+      telegramToken: telegramBotToken,
+      telegramUserId,
+      onMessage: (msg) => {
+        const activeProject = useMemoryStore.getState().activeProjectId;
+        useMemoryStore.getState().addMessage(activeProject, {
+          role: 'user',
+          content: `[Telegram from ${msg.from}]: ${msg.text}`,
+        });
+      },
+    });
+    return () => channelManager.stop();
+  }, [telegramEnabled, telegramBotToken, telegramUserId]);
 
   // --- Global Hotkey PTT (extracted to hook) ---
   useGlobalHotkeys({ setShowDetachedChat, setShowSettings });
@@ -247,6 +296,29 @@ function App() {
     return () => window.removeEventListener('keydown', handleDebugKey);
   }, []);
 
+  // --- Scheduler: idle thoughts, nudges, ritual checks ---
+  useEffect(() => {
+    const unsubScheduler = scheduler.subscribe((event, data) => {
+      if (event === 'IDLE_THOUGHT') {
+        setIdleThought(data);
+      } else if (event === 'NUDGE') {
+        useWatcherStore.getState().addNotification(data, 'low');
+      } else if (event === 'RITUAL_CHECK') {
+        handleCommandRef.current?.(data);
+      }
+    });
+    const stopScheduler = scheduler.start();
+    return () => { unsubScheduler(); stopScheduler(); };
+  }, []);
+
+  // --- Webhook: route incoming HTTP messages to handleCommand ---
+  useEffect(() => {
+    const off = window.electronAPI?.webhook?.onMessage?.((data) => {
+      if (data?.message) handleCommandRef.current?.(data.message);
+    });
+    return () => off?.();
+  }, []);
+
 
 
   // --- Action Handlers ---
@@ -260,6 +332,8 @@ function App() {
       addMessage({ role: 'system', content: `Command blocked — risk level is ${risk}. Open Inner World for details.`, id: Date.now() });
       return;
     }
+
+    consolidationLoop.markActivity();
 
     // Add user message to store immediately so it appears in UI
     addMessage({ role: 'user', content: text, id: Date.now() });
@@ -327,6 +401,9 @@ function App() {
       setIdleThought(null);
     }
   };
+
+  // Keep ref current so cron/scheduler/webhook callbacks always use fresh handleCommand
+  useEffect(() => { handleCommandRef.current = handleCommand; });
 
   const handleMenuAction = (actionId) => {
     if (actionId === 'settings') setShowSettings(true);
@@ -610,6 +687,8 @@ function App() {
         {route.includes('companion') && renderCompanion()}
         {route.includes('commandbar') && renderCommandBar()}
       </div>
+
+      <LiveCanvas />
 
       <AnimatePresence>
         {pendingEvolution && (

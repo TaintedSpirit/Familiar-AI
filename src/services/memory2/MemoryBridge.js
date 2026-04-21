@@ -1,4 +1,5 @@
 import { memoryClient } from './MemoryClient';
+import { archiveSession } from './SessionMemoryHook';
 
 /**
  * Bridges the session-scoped Zustand MemoryStore to the long-term file+SQLite layer.
@@ -61,6 +62,25 @@ export const memoryBridge = {
         unsubscribe = useMemoryStore.subscribe((state) => {
             try {
                 const activeId = state.activeProjectId;
+                const prevActiveId = prevState.activeProjectId;
+
+                // Session archival: messages cleared (clearMessages called)
+                const prevMsgs = prevState.projects?.find(p => p.id === prevActiveId)?.messages || [];
+                const nextMsgs = state.projects?.find(p => p.id === activeId)?.messages || [];
+                if (activeId === prevActiveId && prevMsgs.length >= 3 && nextMsgs.length === 0) {
+                    const proj = prevState.projects?.find(p => p.id === prevActiveId);
+                    archiveSession({ messages: prevMsgs, projectName: proj?.name }).catch(() => {});
+                }
+
+                // Session archival: project switched with messages present
+                if (activeId !== prevActiveId) {
+                    const prevProj = prevState.projects?.find(p => p.id === prevActiveId);
+                    const prevProjMsgs = prevProj?.messages || [];
+                    if (prevProjMsgs.length >= 3) {
+                        archiveSession({ messages: prevProjMsgs, projectName: prevProj?.name }).catch(() => {});
+                    }
+                }
+
                 diffLatest(prevState.projects, state.projects, activeId, 'memory', 'memory');
                 diffLatest(prevState.projects, state.projects, activeId, 'keyDecisions', 'decision');
                 // Thread creation: detect when threads list grew

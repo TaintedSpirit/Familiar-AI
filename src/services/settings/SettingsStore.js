@@ -55,6 +55,46 @@ export const useSettingsStore = create(
             mcpServers: {}, // Example: { sqlite: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-sqlite', '--db-path', 'test.db'] } }
             setMcpServers: (servers) => set({ mcpServers: servers }),
 
+            // Docker Sandbox (Track 1)
+            dockerEnabled: false,
+            setDockerEnabled: (val) => set({ dockerEnabled: val }),
+
+            // Tool Policy — per-tool: 'allow' | 'ask' | 'deny'
+            toolPolicies: {
+                write_file: 'ask',
+                run_command: 'ask',
+                execute_sandboxed: 'ask',
+            },
+            setToolPolicy: (tool, policy) => set(state => ({
+                toolPolicies: { ...state.toolPolicies, [tool]: policy }
+            })),
+
+            // Allowed write paths — if non-empty, write_file is auto-approved for these prefixes
+            allowedWritePaths: [],
+            setAllowedWritePaths: (paths) => set({ allowedWritePaths: paths }),
+
+            // Cron & Webhooks (Track 2)
+            webhookEnabled: false,
+            webhookPort: 3001,
+            setWebhookEnabled: (val) => set({ webhookEnabled: val }),
+            setWebhookPort: (port) => set({ webhookPort: port }),
+
+            // Omni-Channel (Track 3)
+            telegramEnabled: false,
+            telegramBotToken: '',
+            telegramUserId: '',
+            setTelegramEnabled: (val) => set({ telegramEnabled: val }),
+            setTelegramBotToken: (token) => set({ telegramBotToken: token }),
+            setTelegramUserId: (id) => set({ telegramUserId: id }),
+
+            // Media Generation (Track 4)
+            imageGenProvider: 'openai',
+            liveCanvasEnabled: true,
+            setImageGenProvider: (p) => set({ imageGenProvider: p }),
+            setLiveCanvasEnabled: (val) => set({ liveCanvasEnabled: val }),
+            stabilityApiKey: '',
+            setStabilityApiKey: (key) => set({ stabilityApiKey: key }),
+
             // Transient fallback state (not meaningful to persist, but that's fine)
             fallbackActive: false,
             fallbackReason: null,

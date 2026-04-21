@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { X, Settings, Cpu, Mic, Eye, History, Zap, Keyboard, User, Image as ImageIcon, Bot, Plug, Hash } from 'lucide-react';
+import { X, Settings, Cpu, Mic, Eye, History, Zap, Keyboard, User, Image as ImageIcon, Bot, Plug, Hash, Shield, Clock, Radio, LayoutDashboard, Activity, Box, Database, Server } from 'lucide-react';
+import { cronEngine } from '../../services/watchers/CronEngine';
 import { useSettingsStore } from '../../services/settings/SettingsStore';
 import { useSpeechStore } from '../../services/voice/SpeechStore';
 import { audioGraph } from '../../services/voice/AudioGraph';
@@ -39,9 +40,28 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
 
         // MCP
         mcpServers, setMcpServers,
+
+        // Security
+        dockerEnabled, setDockerEnabled,
+        toolPolicies, setToolPolicy,
+        allowedWritePaths, setAllowedWritePaths,
+
+        // Automation
+        webhookEnabled, setWebhookEnabled,
+        webhookPort, setWebhookPort,
+
+        // Channels
+        telegramEnabled, setTelegramEnabled,
+        telegramBotToken, setTelegramBotToken,
+        telegramUserId, setTelegramUserId,
+
+        // Media
+        imageGenProvider, setImageGenProvider,
+        liveCanvasEnabled, setLiveCanvasEnabled,
+        stabilityApiKey, setStabilityApiKey,
     } = useSettingsStore();
 
-    const [activeTab, setActiveTab] = useState('AI');
+    const [activeTab, setActiveTab] = useState('Overview');
     const [micTestState, setMicTestState] = useState('idle'); // 'idle', 'recording', 'computing', 'success', 'error'
     const [micTestResult, setMicTestResult] = useState(null);
 
@@ -64,6 +84,7 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
     }, []);
 
     const tabs = [
+        { id: 'Overview', label: 'Overview', icon: LayoutDashboard },
         { id: 'General', label: 'General', icon: Settings },
         { id: 'AI', label: 'AI', icon: Cpu },
         { id: 'Persona', label: 'Persona', icon: User },
@@ -72,8 +93,12 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
         { id: 'History', label: 'History', icon: History },
         { id: 'Streaming', label: 'Streaming', icon: Zap },
         { id: 'Hotkeys', label: 'Hotkeys', icon: Keyboard },
-        { id: 'Discord', label: 'Discord', icon: Bot },
+
         { id: 'MCP', label: 'MCP', icon: Plug },
+        { id: 'Security', label: 'Security', icon: Shield },
+        { id: 'Automation', label: 'Automation', icon: Clock },
+        { id: 'Channels', label: 'Channels', icon: Radio },
+        { id: 'Media', label: 'Media', icon: ImageIcon },
     ];
 
     const renderAIContent = () => (
@@ -915,6 +940,454 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
         );
     };
 
+    const renderSecurityContent = () => (
+        <div className="space-y-6">
+            <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-white">Docker Sandbox</h3>
+                <p className="text-xs text-white/40">Runs risky commands in an ephemeral container — no host filesystem access.</p>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-orange-500/10">
+                        <Shield className="w-4 h-4 text-orange-400" />
+                    </div>
+                    <div>
+                        <p className="text-sm font-medium text-white">Enable Docker Sandbox</p>
+                        <p className="text-[10px] text-white/40">Auto-sandboxes python, node, rm -rf, eval, etc.</p>
+                    </div>
+                </div>
+                <button
+                    onClick={() => setDockerEnabled(!dockerEnabled)}
+                    className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${dockerEnabled ? 'bg-orange-500/70' : 'bg-white/10'}`}
+                >
+                    <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${dockerEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+            </div>
+
+            <div className="p-4 bg-orange-500/10 rounded-xl border border-orange-500/20 flex gap-3">
+                <Shield className="w-4 h-4 text-orange-400 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                    <h4 className="text-xs font-bold text-orange-200">Requirements</h4>
+                    <p className="text-[10px] text-orange-200/60 leading-relaxed">
+                        Docker Desktop must be running. Containers use <span className="text-orange-200/80 font-mono">--network=none --read-only --cap-drop=ALL</span> for maximum isolation. 128 MB RAM, 0.5 CPU, 15s timeout.
+                    </p>
+                </div>
+            </div>
+
+            {/* Tool Policy */}
+            <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-white">Tool Policies</h3>
+                <p className="text-xs text-white/40">Control how the agent handles sensitive operations. Override autonomy level for specific tools.</p>
+            </div>
+
+            {[
+                { tool: 'write_file', label: 'Write File', desc: 'Create or overwrite files on disk' },
+                { tool: 'run_command', label: 'Run Command', desc: 'Execute shell commands' },
+                { tool: 'execute_sandboxed', label: 'Execute Sandboxed', desc: 'Run code in Docker container' },
+            ].map(({ tool, label, desc }) => (
+                <div key={tool} className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                    <div>
+                        <p className="text-sm font-medium text-white">{label}</p>
+                        <p className="text-[10px] text-white/40">{desc}</p>
+                    </div>
+                    <select
+                        value={toolPolicies?.[tool] ?? 'ask'}
+                        onChange={(e) => setToolPolicy(tool, e.target.value)}
+                        className="bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-1.5 text-white text-xs focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-colors cursor-pointer"
+                    >
+                        <option value="allow">Always allow</option>
+                        <option value="ask">Ask each time</option>
+                        <option value="deny">Always deny</option>
+                    </select>
+                </div>
+            ))}
+
+            {/* Allowed Write Paths */}
+            <div className="space-y-2">
+                <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Allowed Write Paths</label>
+                <p className="text-[10px] text-white/30">One path prefix per line. write_file is auto-approved for these locations regardless of policy above.</p>
+                <textarea
+                    rows={3}
+                    value={(allowedWritePaths || []).join('\n')}
+                    onChange={(e) => setAllowedWritePaths(e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
+                    placeholder="C:/Users/you/Projects&#10;C:/Users/you/Documents/notes"
+                    className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white/80 font-mono text-xs focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-colors resize-none"
+                />
+            </div>
+        </div>
+    );
+
+    const renderAutomationContent = () => {
+        const jobs = cronEngine.list();
+        return (
+            <div className="space-y-6">
+                <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-white">Webhook Gateway</h3>
+                    <p className="text-xs text-white/40">Accept POST requests on localhost that trigger agent messages.</p>
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-cyan-500/10">
+                            <Clock className="w-4 h-4 text-cyan-400" />
+                        </div>
+                        <div>
+                            <p className="text-sm font-medium text-white">Enable Webhook</p>
+                            <p className="text-[10px] text-white/40">POST /webhook → agent message</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => {
+                            const next = !webhookEnabled;
+                            setWebhookEnabled(next);
+                            if (next) window.electronAPI?.webhook?.start(webhookPort);
+                            else window.electronAPI?.webhook?.stop();
+                        }}
+                        className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${webhookEnabled ? 'bg-cyan-500/70' : 'bg-white/10'}`}
+                    >
+                        <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${webhookEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </button>
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Port</label>
+                    <input
+                        type="number"
+                        value={webhookPort || 3001}
+                        onChange={(e) => setWebhookPort(Number(e.target.value))}
+                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors font-mono text-sm"
+                    />
+                    <p className="text-xs text-white/30">Default: 3001. Send: <span className="font-mono text-white/50">POST http://127.0.0.1:{webhookPort}/webhook</span> with JSON body <span className="font-mono text-white/50">{`{"message":"..."}`}</span></p>
+                </div>
+
+                <div className="space-y-2">
+                    <h4 className="text-xs font-semibold text-white/60 tracking-wider uppercase">Scheduled Jobs ({jobs.length})</h4>
+                    {jobs.length === 0 ? (
+                        <p className="text-xs text-white/30">No active cron jobs. Ask the agent to schedule a task.</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {jobs.map(j => (
+                                <div key={j.id} className="p-3 bg-white/5 rounded-lg border border-white/10 flex justify-between items-start gap-3">
+                                    <div className="min-w-0">
+                                        <p className="text-xs font-mono text-cyan-300 truncate">{j.cron}</p>
+                                        <p className="text-[10px] text-white/50 mt-0.5 truncate">{j.intent}</p>
+                                    </div>
+                                    <button
+                                        onClick={() => cronEngine.remove(j.id)}
+                                        className="text-white/30 hover:text-red-400 transition-colors shrink-0"
+                                    >
+                                        <X className="w-3 h-3" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        );
+    };
+
+    const renderChannelsContent = () => {
+        const channelText = (discordCompanionChannels || []).join(', ');
+        const handleChannelChange = (val) => {
+            const ids = val.split(',').map(s => s.trim()).filter(Boolean);
+            setDiscordCompanionChannels(ids);
+        };
+
+        return (
+            <div className="space-y-6">
+                {/* ── Discord ── */}
+                <div className="space-y-1">
+                    <h3 className="text-sm font-semibold text-white">Discord Bot</h3>
+                    <p className="text-xs text-white/40">Reach your Familiar through Discord DMs and guild channels.</p>
+                </div>
+
+                <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors ${
+                    discordConnected
+                        ? 'bg-green-500/10 border-green-500/20'
+                        : 'bg-white/5 border-white/10'
+                }`}>
+                    <Plug className={`w-4 h-4 shrink-0 ${discordConnected ? 'text-green-400' : 'text-white/30'}`} />
+                    <div className="flex-1 min-w-0">
+                        <p className={`text-sm font-medium ${discordConnected ? 'text-green-300' : 'text-white/50'}`}>
+                            {discordConnected ? 'Connected' : 'Disconnected'}
+                        </p>
+                    </div>
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${discordConnected ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.6)]' : 'bg-white/20'}`} />
+                </div>
+
+                <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-indigo-500/10">
+                            <Bot className="w-4 h-4 text-indigo-400" />
+                        </div>
+                        <div>
+                            <p className="text-sm font-medium text-white">Enable Discord Bot</p>
+                            <p className="text-[10px] text-white/40">Start the bot when the app is open</p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={() => setDiscordEnabled(!discordEnabled)}
+                        className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${discordEnabled ? 'bg-indigo-500/70' : 'bg-white/10'}`}
+                    >
+                        <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${discordEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                    </button>
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Bot Token</label>
+                    <input
+                        type="password"
+                        value={discordBotToken || ''}
+                        onChange={(e) => setDiscordBotToken(e.target.value)}
+                        placeholder="Bot token from discord.com/developers"
+                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors placeholder-white/10 font-mono text-sm"
+                    />
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-white/60 tracking-wider uppercase flex items-center gap-1.5">
+                        <Hash className="w-3 h-3" />
+                        Companion Channels
+                    </label>
+                    <textarea
+                        value={channelText}
+                        onChange={(e) => handleChannelChange(e.target.value)}
+                        placeholder="123456789012345678, 987654321098765432"
+                        rows={2}
+                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors placeholder-white/10 font-mono text-sm resize-none"
+                    />
+                    <p className="text-xs text-white/30">Comma-separated channel IDs where the bot replies to every message.</p>
+                </div>
+
+                {/* Divider */}
+                <div className="border-t border-white/5 pt-6">
+                    {/* ── Telegram ── */}
+                    <div className="space-y-1 mb-4">
+                        <h3 className="text-sm font-semibold text-white">Telegram Bot</h3>
+                        <p className="text-xs text-white/40">Chat with Familiar through Telegram. Messages appear in the active project.</p>
+                    </div>
+
+                    <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10 mb-4">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 rounded-lg bg-blue-500/10">
+                                <Radio className="w-4 h-4 text-blue-400" />
+                            </div>
+                            <div>
+                                <p className="text-sm font-medium text-white">Enable Telegram</p>
+                                <p className="text-[10px] text-white/40">Long-poll the bot API while app is open</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setTelegramEnabled(!telegramEnabled)}
+                            className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${telegramEnabled ? 'bg-blue-500/70' : 'bg-white/10'}`}
+                        >
+                            <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${telegramEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                        </button>
+                    </div>
+
+                    <div className="space-y-2 mb-4">
+                        <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Bot Token</label>
+                        <input
+                            type="password"
+                            value={telegramBotToken || ''}
+                            onChange={(e) => setTelegramBotToken(e.target.value)}
+                            placeholder="From @BotFather on Telegram"
+                            className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors placeholder-white/10 font-mono text-sm"
+                        />
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Allowed User ID</label>
+                        <input
+                            type="text"
+                            value={telegramUserId || ''}
+                            onChange={(e) => setTelegramUserId(e.target.value)}
+                            placeholder="Your Telegram user ID (from @userinfobot)"
+                            className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors placeholder-white/10 font-mono text-sm"
+                        />
+                        <p className="text-xs text-white/30">Only messages from this ID will be processed. Leave empty to accept anyone (not recommended).</p>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const renderMediaContent = () => (
+        <div className="space-y-6">
+            <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-white">Image Generation</h3>
+                <p className="text-xs text-white/40">Provider used when the agent calls <span className="font-mono text-white/60">generate_image</span>.</p>
+            </div>
+
+            <div className="space-y-2">
+                <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Provider</label>
+                <div className="flex gap-2">
+                    {['openai', 'stability'].map(p => (
+                        <button
+                            key={p}
+                            onClick={() => setImageGenProvider(p)}
+                            className={`flex-1 py-2.5 rounded-xl border text-sm font-medium transition-all ${imageGenProvider === p ? 'bg-purple-500/20 border-purple-500 text-white' : 'bg-white/5 border-white/10 text-white/50 hover:text-white/80'}`}
+                        >
+                            {p === 'openai' ? 'DALL-E 3' : 'Stability AI'}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {imageGenProvider === 'stability' && (
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Stability API Key</label>
+                    <input
+                        type="password"
+                        value={stabilityApiKey || ''}
+                        onChange={(e) => setStabilityApiKey(e.target.value)}
+                        placeholder="sk-..."
+                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors placeholder-white/10 font-mono text-sm"
+                    />
+                    <p className="text-xs text-white/30">From platform.stability.ai — uses SDXL 1024x1024 model.</p>
+                </div>
+            )}
+
+            {imageGenProvider === 'openai' && (
+                <p className="text-xs text-white/30">Uses the OpenAI key from the AI tab. Model: dall-e-3.</p>
+            )}
+
+            <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">
+                <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-purple-500/10">
+                        <ImageIcon className="w-4 h-4 text-purple-400" />
+                    </div>
+                    <div>
+                        <p className="text-sm font-medium text-white">Live Canvas</p>
+                        <p className="text-[10px] text-white/40">Show generated images in floating panel</p>
+                    </div>
+                </div>
+                <button
+                    onClick={() => setLiveCanvasEnabled(!liveCanvasEnabled)}
+                    className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${liveCanvasEnabled ? 'bg-purple-500/70' : 'bg-white/10'}`}
+                >
+                    <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${liveCanvasEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+            </div>
+        </div>
+    );
+
+    const renderOverviewContent = () => (
+        <div className="space-y-6">
+            {/* Top Row: Telemetry */}
+            <div className="p-5 bg-black/20 rounded-2xl border border-white/5 shadow-inner">
+                <div className="flex items-center gap-3 mb-6">
+                    <div className="p-3 bg-blue-500/10 rounded-xl text-blue-400">
+                        <Activity size={24} />
+                    </div>
+                    <div>
+                        <h2 className="text-lg font-light text-white tracking-wide">Gateway Telemetry</h2>
+                        <p className="text-xs text-white/40">Real-time system health.</p>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="p-4 bg-white/5 rounded-xl border border-white/10 hover:border-white/20 transition-colors">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs text-white/50 uppercase tracking-wider font-semibold">Active Persona</span>
+                            <User size={14} className="text-purple-400" />
+                        </div>
+                        <div className="text-lg font-bold text-white mb-1 capitalize">{activePersona}</div>
+                        <div className="flex items-center gap-2 text-xs">
+                            <div className="w-1.5 h-1.5 rounded-full bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.8)]"></div>
+                            <span className="text-white/60 font-mono">Bound to {model}</span>
+                        </div>
+                    </div>
+
+                    <div className="p-4 bg-white/5 rounded-xl border border-white/10 hover:border-white/20 transition-colors">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs text-white/50 uppercase tracking-wider font-semibold">Core Autonomy</span>
+                            <Zap size={14} className="text-yellow-400" />
+                        </div>
+                        <div className="text-lg font-bold text-white mb-1">{autonomyLevel}%</div>
+                        <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden mt-2">
+                            <div className="bg-gradient-to-r from-yellow-500/50 to-yellow-400 h-full" style={{ width: `${autonomyLevel}%` }}></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Middle Row: Subsystems & Channels */}
+            <div className="grid grid-cols-2 gap-4">
+                <div className="p-5 bg-black/20 rounded-2xl border border-white/5">
+                    <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                        <Box size={16} className="text-emerald-400" />
+                        Subsystems
+                    </h3>
+                    <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-white/70">Docker Sandbox</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${dockerEnabled ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                                {dockerEnabled ? 'Active' : 'Offline'}
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-white/70">Cron Engine</span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                Running
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-white/70">Live Canvas UI</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${liveCanvasEnabled ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-red-500/20 text-red-400 border border-red-500/30'}`}>
+                                {liveCanvasEnabled ? 'Mounted' : 'Offline'}
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                            <span className="text-xs text-white/70">MCP Bridges</span>
+                            <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                                {Object.keys(mcpServers || {}).length} Servers
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-5 bg-black/20 rounded-2xl border border-white/5">
+                    <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+                        <Radio size={16} className="text-indigo-400" />
+                        Omni-Channel
+                    </h3>
+                    <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-white/70">Discord Native</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${discordEnabled ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'bg-white/10 text-white/30 border border-white/10'}`}>
+                                {discordEnabled ? 'Configured' : 'Unlinked'}
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs text-white/70">Telegram API</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${telegramEnabled ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'bg-white/10 text-white/30 border border-white/10'}`}>
+                                {telegramEnabled ? 'Paired' : 'Unlinked'}
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                            <span className="text-xs text-white/70 flex items-center gap-1.5"><Database size={12} /> Webhooks</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${webhookEnabled ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'bg-white/10 text-white/30 border border-white/10'}`}>
+                                {webhookEnabled ? `Port ${webhookPort}` : 'Offline'}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            {/* Health Notice */}
+            <div className="p-4 bg-purple-500/10 rounded-xl border border-purple-500/20 flex gap-3 text-left">
+                <div className="text-purple-400 mt-0.5"><History size={16} /></div>
+                <div>
+                     <p className="text-xs font-semibold text-purple-200">Gateway Active</p>
+                     <p className="text-[10px] text-purple-200/60 mt-0.5">The Gateway daemon is operating securely. View the detailed tabs below to modify subsystems or configure model bindings.</p>
+                </div>
+            </div>
+        </div>
+    );
+
     return (
         <motion.div
             initial={{ opacity: 0 }}
@@ -928,7 +1401,7 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                 initial={{ scale: 0.95, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.95, opacity: 0 }}
-                className="w-full max-w-2xl bg-[#0f0f12] border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col h-[800px] max-h-[85vh]"
+                className="w-full max-w-4xl bg-[#0f0f12] border border-white/10 rounded-2xl overflow-hidden shadow-2xl flex flex-col h-[800px] max-h-[85vh]"
             >
                 {/* Header */}
                 <div className="px-6 py-4 flex justify-between items-center border-b border-white/5 bg-[#0f0f12]">
@@ -938,29 +1411,34 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                     </button>
                 </div>
 
-                {/* Navigation */}
-                <div className="flex overflow-x-auto px-6 py-2 border-b border-white/5 gap-6 scrollbar-none">
-                    {tabs.map(tab => (
-                        <button
-                            key={tab.id}
-                            onClick={() => setActiveTab(tab.id)}
-                            className={`flex items-center gap-2 py-3 text-sm font-medium transition-colors relative whitespace-nowrap
-                                ${activeTab === tab.id ? 'text-white' : 'text-white/40 hover:text-white/70'}`}
-                        >
-                            {/* <tab.icon className="w-4 h-4" /> */}
-                            {tab.label}
-                            {activeTab === tab.id && (
-                                <motion.div
-                                    layoutId="activeTab"
-                                    className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
-                                />
-                            )}
-                        </button>
-                    ))}
-                </div>
+                <div className="flex flex-1 overflow-hidden">
+                    {/* Navigation Sidebar */}
+                    <div className="w-56 flex-shrink-0 flex flex-col overflow-y-auto border-r border-white/5 py-4 scrollbar-none space-y-1">
+                        {tabs.map(tab => {
+                            const Icon = tab.icon;
+                            return (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setActiveTab(tab.id)}
+                                    className={`flex items-center gap-3 px-6 py-3 text-sm font-medium transition-colors relative text-left w-full
+                                        ${activeTab === tab.id ? 'text-white bg-white/5' : 'text-white/40 hover:text-white/70 hover:bg-white/[0.02]'}`}
+                                >
+                                    {Icon && <Icon className={`w-4 h-4 ${activeTab === tab.id ? 'text-purple-400' : 'opacity-50'}`} />}
+                                    {tab.label}
+                                    {activeTab === tab.id && (
+                                        <motion.div
+                                            layoutId="activeTabIndicator"
+                                            className="absolute left-0 top-1/4 bottom-1/4 w-0.5 bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.5)]"
+                                        />
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </div>
 
-                {/* Content */}
-                <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                    {/* Content */}
+                    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar relative">
+                    {activeTab === 'Overview' && renderOverviewContent()}
                     {activeTab === 'General' && renderGeneralContent()}
                     {activeTab === 'AI' && renderAIContent()}
                     {activeTab === 'Persona' && renderPersonaContent()}
@@ -969,9 +1447,13 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                     {activeTab === 'History' && renderHistoryContent()}
                     {activeTab === 'Streaming' && renderStreamingContent()}
                     {activeTab === 'Hotkeys' && renderHotkeysContent()}
-                    {activeTab === 'Discord' && renderDiscordContent()}
-                </div>
 
+                    {activeTab === 'Security' && renderSecurityContent()}
+                    {activeTab === 'Automation' && renderAutomationContent()}
+                    {activeTab === 'Channels' && renderChannelsContent()}
+                    {activeTab === 'Media' && renderMediaContent()}
+                </div>
+              </div>
             </motion.div>
         </motion.div>
     );

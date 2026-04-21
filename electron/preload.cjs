@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Project-root memory (Soul.md, User.md, memory.md, agent.md, daily logs, memory.db)
     projectMemory: {
         search: (args) => ipcRenderer.invoke('projectMemory:search', args),
+        searchHybrid: (args) => ipcRenderer.invoke('projectMemory:searchHybrid', args),
+        setEmbeddingKey: (key) => ipcRenderer.invoke('projectMemory:setEmbeddingKey', key),
         getDailyLog: (date) => ipcRenderer.invoke('projectMemory:getDailyLog', date),
         writeDailyLog: (date, content) => ipcRenderer.invoke('projectMemory:writeDailyLog', date, content),
         readRootFiles: () => ipcRenderer.invoke('projectMemory:readRootFiles'),
@@ -91,6 +93,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
         const subscription = (_event, data) => callback(data);
         ipcRenderer.on('discord:message', subscription);
         return () => ipcRenderer.removeListener('discord:message', subscription);
+    },
+
+    // Webhook Gateway
+    webhook: {
+        start: (port, secret) => ipcRenderer.invoke('webhook:start', port, secret),
+        stop: () => ipcRenderer.invoke('webhook:stop'),
+        onMessage: (cb) => {
+            const sub = (_, p) => cb(p);
+            ipcRenderer.on('webhook:message', sub);
+            return () => ipcRenderer.removeListener('webhook:message', sub);
+        },
     },
 
     // MCP Bridge

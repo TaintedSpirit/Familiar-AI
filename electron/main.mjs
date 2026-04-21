@@ -18,7 +18,10 @@ const activeWindow = require('active-win');
 const { uIOhook } = require('uiohook-napi');
 const discordBot = require('./discordBot.cjs');
 const MemoryIpc = require('./memory/MemoryIpc.cjs');
+const { WebhookGateway } = require('./WebhookGateway.cjs');
 import { mcpManager } from './MCPManager.mjs';
+
+const webhookGateway = new WebhookGateway();
 
 const isDev = !app.isPackaged;
 
@@ -240,6 +243,18 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('discord:update-channels', (_e, channels) => {
         discordBot.updateCompanionChannels(channels);
+        return true;
+    });
+
+    // ─── Webhook Gateway IPC ─────────────────────────────────────────────────
+    ipcMain.handle('webhook:start', (_e, port, secret) => {
+        const target = companionWindow || commandBarWindow;
+        webhookGateway.start(port || 3001, target, secret || null);
+        return true;
+    });
+
+    ipcMain.handle('webhook:stop', () => {
+        webhookGateway.stop();
         return true;
     });
 

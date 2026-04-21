@@ -10,6 +10,7 @@ import { useFormStore } from "../forms/FormStore";
 import { FormCapabilities } from "../forms/FormCapabilities";
 import { COMPANION_PERSONA, detectExplainMode } from "./Persona";
 import { FETCH_TIMEOUT_MS } from "../constants";
+import { projectMemoryClient } from "../memory2/MemoryClient";
 
 // Safe JSON extractor — strips markdown fences then parses; never executes code.
 function safeExtractJSON(text) {
@@ -37,6 +38,7 @@ export class LLMRouter {
         this.genAI = null;
         this.model = null;
         this.lastGeminiKey = null;
+        this._lastEmbedKey = null;
     }
 
     async init() {
@@ -46,6 +48,12 @@ export class LLMRouter {
     async query(prompt, contextMessages, onChunk = null) {
         try {
             const { aiProvider, geminiApiKey, openaiApiKey, secondaryAiProvider, secondaryModel, model: selectedModel, temperature, topP, topK, autonomyLevel, setFallbackState } = useSettingsStore.getState();
+
+            // Keep project memory embedding key in sync with the Gemini key in settings
+            if (geminiApiKey && geminiApiKey !== this._lastEmbedKey) {
+                this._lastEmbedKey = geminiApiKey;
+                projectMemoryClient.setEmbeddingKey(geminiApiKey).catch(() => { });
+            }
             const { activeProjectId, projects } = useMemoryStore.getState();
 
             // 0. Project Context
@@ -680,8 +688,15 @@ export class LLMRouter {
         const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const dateStr = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
 
+        let skillsContext = '';
+        try {
+            const { skillLoader } = await import('../soul/SkillLoader');
+            skillsContext = await skillLoader.getSkillsForPrompt();
+        } catch { /* non-fatal */ }
+
         const systemPrompt = `You are Antigravity, an AI agent with access to tools. Use tools to fulfill the user's request accurately and completely. When you have enough information, provide a final answer — do not call more tools than necessary.
 ${soulContext}
+${skillsContext}
 Current time: ${timeStr}, ${dateStr}`;
 
         if (aiProvider === 'anthropic') {

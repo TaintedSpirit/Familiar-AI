@@ -88,6 +88,71 @@ const TOOLS = [
             },
             required: ['fact']
         }
+    },
+    {
+        name: 'execute_sandboxed',
+        description: 'Run code in an isolated Docker container (Python, Node, or shell). Safer than run_command for untrusted or destructive scripts. Requires Docker Desktop.',
+        parameters: {
+            type: 'object',
+            properties: {
+                command: { type: 'string', description: 'Code or shell command to execute' },
+                language: { type: 'string', enum: ['python', 'node', 'sh'], description: 'Runtime environment' }
+            },
+            required: ['command', 'language']
+        }
+    },
+    {
+        name: 'generate_image',
+        description: 'Generate an image from a text prompt using DALL-E 3 or Stability AI. The result opens in the Live Canvas panel.',
+        parameters: {
+            type: 'object',
+            properties: {
+                prompt: { type: 'string', description: 'Detailed image description' },
+                size: { type: 'string', enum: ['1024x1024', '1792x1024', '1024x1792'], description: 'Image dimensions (default 1024x1024)' }
+            },
+            required: ['prompt']
+        }
+    },
+    {
+        name: 'schedule_task',
+        description: 'Schedule a recurring task using a 5-field cron expression. The agent receives the intent as a prompt at each trigger time.',
+        parameters: {
+            type: 'object',
+            properties: {
+                cron: { type: 'string', description: '5-field cron expression, e.g. "0 9 * * 1-5" for weekdays at 9 AM' },
+                intent: { type: 'string', description: 'What the agent should do when the task fires' },
+                id: { type: 'string', description: 'Optional stable job identifier for later removal' }
+            },
+            required: ['cron', 'intent']
+        }
+    },
+    {
+        name: 'remove_scheduled_task',
+        description: 'Cancel a previously scheduled recurring task by its id.',
+        parameters: {
+            type: 'object',
+            properties: {
+                id: { type: 'string', description: 'Job id returned by schedule_task' }
+            },
+            required: ['id']
+        }
+    },
+    {
+        name: 'spawn_agent',
+        description: 'Spawn a background agent to handle a long or parallel task without blocking the current conversation. The result is delivered as a notification when done.',
+        parameters: {
+            type: 'object',
+            properties: {
+                task: { type: 'string', description: 'Full task description for the background agent' },
+                label: { type: 'string', description: 'Short human-readable label for tracking, e.g. "Research quantum computing"' }
+            },
+            required: ['task']
+        }
+    },
+    {
+        name: 'list_spawns',
+        description: 'List all currently running background agents and how long they have been running.',
+        parameters: { type: 'object', properties: {} }
     }
 ];
 

@@ -41,9 +41,19 @@ class WatcherEngine {
                         useWatcherStore.getState().toggleWatcher(w.id, false);
                     }
                 } else if (w.type === 'workflow') {
-                    // Check for failures/loops
-                    // Mock logic: assumes WorkflowStore tracks 'status'
-                    // For now, just a placeholder
+                    const workflowState = useWorkflowStore.getState();
+                    const status = workflowState.executionStatus;
+                    if (status === 'failed' || status === 'error') {
+                        triggered = true;
+                        message = `Workflow "${w.name}" failed (status: ${status}).`;
+                        useWatcherStore.getState().toggleWatcher(w.id, false);
+                    } else if (status === 'running') {
+                        const elapsed = now - (w.startedAt || now);
+                        if (elapsed > (w.timeoutMs || 5 * 60 * 1000)) {
+                            triggered = true;
+                            message = `Workflow "${w.name}" may be stuck — running for ${Math.round(elapsed / 60000)} min.`;
+                        }
+                    }
                 }
 
                 if (triggered) {

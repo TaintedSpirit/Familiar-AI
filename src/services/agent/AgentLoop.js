@@ -23,12 +23,18 @@ class AgentLoop {
         const tools = toolRegistry.getAll();
 
         // Internal message thread for the LLM (separate from UI store)
-        const messages = [
+        let messages = [
             ...conversationHistory
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(m => ({ role: m.role, content: String(m.content || '') })),
             { role: 'user', content: prompt }
         ];
+
+        // Compact history if approaching token limits
+        try {
+            const { compactIfNeeded } = await import('../memory2/CompactionService');
+            messages = await compactIfNeeded(messages);
+        } catch { /* non-fatal */ }
 
         for (let i = 0; i < MAX_ITERATIONS; i++) {
             let response;
