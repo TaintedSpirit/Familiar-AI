@@ -18,6 +18,10 @@ const TYPE_MAP = {
 };
 
 const HALF_LIFE_DAYS = 30;
+const EMBED_MODEL = 'text-embedding-004';
+const VECTOR_WEIGHT = 0.6;
+const KEYWORD_WEIGHT = 0.4;
+const MMR_LAMBDA = 0.7;
 
 function sha256(str) {
     return crypto.createHash('sha256').update(str).digest('hex');
@@ -35,6 +39,27 @@ function dailyStub(date) {
     return `# Session Log — ${date}\n\n_Add notes here as the session progresses._\n`;
 }
 
+function cosineSimilarity(a, b) {
+    let dot = 0, magA = 0, magB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        magA += a[i] * a[i];
+        magB += b[i] * b[i];
+    }
+    const denom = Math.sqrt(magA) * Math.sqrt(magB);
+    return denom === 0 ? 0 : Math.max(0, Math.min(1, dot / denom));
+}
+
+// Token-based Jaccard similarity for MMR diversity (no extra embedding call)
+function jaccardSimilarity(textA, textB) {
+    const tokensA = new Set(textA.toLowerCase().split(/\W+/).filter(Boolean));
+    const tokensB = new Set(textB.toLowerCase().split(/\W+/).filter(Boolean));
+    let inter = 0;
+    for (const t of tokensA) if (tokensB.has(t)) inter++;
+    const union = tokensA.size + tokensB.size - inter;
+    return union === 0 ? 0 : inter / union;
+}
+
 class ProjectMemoryService extends EventEmitter {
     constructor({ projectRoot }) {
         super();
@@ -44,6 +69,12 @@ class ProjectMemoryService extends EventEmitter {
         this._db = null;
         this._watcher = null;
         this._debounceTimers = new Map();
+
+        // Vector / embedding state
+        this._apiKey = null;
+        this._genAI = null;
+        this._embedQueue = new Set();
+        this._embedRunning = false;
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -75,6 +106,13 @@ class ProjectMemoryService extends EventEmitter {
                 updated_at INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS embeddings (
+                doc_id TEXT PRIMARY KEY,
+                vector TEXT NOT NULL,
+                model  TEXT NOT NULL,
+                hash   TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS meta (
                 key   TEXT PRIMARY KEY,
                 value TEXT
@@ -93,13 +131,14 @@ class ProjectMemoryService extends EventEmitter {
             END;
             CREATE TRIGGER IF NOT EXISTS docs_ad AFTER DELETE ON documents BEGIN
                 INSERT INTO documents_fts(documents_fts, rowid, body, path) VALUES ('delete', old.rowid, old.body, old.path);
+                DELETE FROM embeddings WHERE doc_id = old.id;
             END;
             CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE ON documents BEGIN
                 INSERT INTO documents_fts(documents_fts, rowid, body, path) VALUES ('delete', old.rowid, old.body, old.path);
                 INSERT INTO documents_fts(rowid, body, path) VALUES (new.rowid, new.body, new.path);
             END;
         `);
-        this._db.prepare(`INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1')`).run();
+        this._db.prepare(`INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '2')`).run();
     }
 
     // ── Indexing ───────────────────────────────────────────────────────────────
@@ -126,7 +165,8 @@ class ProjectMemoryService extends EventEmitter {
         }
 
         const removed = this._pruneOrphans(seen);
-        console.log(`[ProjectMemory] scan: indexed=${indexed}, removed=${removed}`);
+        const pending = this._embedQueue.size;
+        console.log(`[ProjectMemory] scan: indexed=${indexed}, removed=${removed}, embedding queue=${pending}`);
         return { indexed, removed };
     }
 
@@ -161,6 +201,9 @@ class ProjectMemoryService extends EventEmitter {
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET body=excluded.body, hash=excluded.hash, updated_at=excluded.updated_at
         `).run(id, relPath, type, body, hash, now);
+
+        // Mark stale / new embedding for background recompute
+        this._queueEmbed(id);
         return true;
     }
 
@@ -209,58 +252,216 @@ class ProjectMemoryService extends EventEmitter {
         this._watcher.on('unlink', onChange);
     }
 
-    // ── Search ─────────────────────────────────────────────────────────────────
+    // ── Embedding ──────────────────────────────────────────────────────────────
+
+    setApiKey(key) {
+        if (!key || this._apiKey === key) return;
+        this._apiKey = key;
+        this._genAI = null; // reset cached instance on key change
+
+        // Queue any docs that don't have a current embedding
+        const docs = this._db.prepare('SELECT d.id, d.hash FROM documents d LEFT JOIN embeddings e ON e.doc_id = d.id WHERE e.doc_id IS NULL OR e.hash != d.hash').all();
+        for (const d of docs) this._embedQueue.add(d.id);
+
+        if (this._embedQueue.size > 0) {
+            console.log(`[ProjectMemory] embedding queue: ${this._embedQueue.size} docs`);
+            this._flushEmbedQueue();
+        }
+    }
+
+    _queueEmbed(docId) {
+        this._embedQueue.add(docId);
+        this._flushEmbedQueue();
+    }
+
+    _flushEmbedQueue() {
+        if (this._embedRunning || !this._apiKey || this._embedQueue.size === 0) return;
+        this._embedRunning = true;
+        setImmediate(() => this._processEmbedQueue());
+    }
+
+    async _processEmbedQueue() {
+        while (this._embedQueue.size > 0 && this._apiKey) {
+            const [docId] = this._embedQueue;
+            this._embedQueue.delete(docId);
+            try {
+                const row = this._db.prepare('SELECT body, hash FROM documents WHERE id = ?').get(docId);
+                if (!row) continue;
+
+                // Skip if embedding is already current
+                const existing = this._db.prepare('SELECT hash FROM embeddings WHERE doc_id = ?').get(docId);
+                if (existing?.hash === row.hash) continue;
+
+                const vector = await this._embedText(row.body);
+                this._db.prepare(`
+                    INSERT INTO embeddings(doc_id, vector, model, hash)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(doc_id) DO UPDATE SET vector=excluded.vector, model=excluded.model, hash=excluded.hash
+                `).run(docId, JSON.stringify(vector), EMBED_MODEL, row.hash);
+            } catch (e) {
+                console.warn(`[ProjectMemory] embedding failed for ${docId}:`, e.message);
+            }
+        }
+        this._embedRunning = false;
+    }
+
+    async _embedText(text) {
+        if (!this._genAI) {
+            // Dynamic import works from CJS to load the ESM/CJS package
+            const { GoogleGenerativeAI } = await import('@google/generative-ai');
+            this._genAI = new GoogleGenerativeAI(this._apiKey);
+        }
+        const model = this._genAI.getGenerativeModel({ model: EMBED_MODEL });
+        const result = await model.embedContent(text);
+        return Array.from(result.embedding.values);
+    }
+
+    // ── Hybrid Search ──────────────────────────────────────────────────────────
+
+    async searchHybrid({ query, limit = 10, types = [], minScore = 0.15 }) {
+        if (!query || !query.trim()) return { hits: [], total: 0, mode: 'empty' };
+
+        // Fall back to keyword-only if no API key
+        if (!this._apiKey) return { ...this.search({ query, limit, types }), mode: 'keyword' };
+
+        let queryVec;
+        try {
+            queryVec = await this._embedText(query);
+        } catch (e) {
+            console.warn('[ProjectMemory] query embed failed, falling back to FTS5:', e.message);
+            return { ...this.search({ query, limit, types }), mode: 'keyword' };
+        }
+
+        // 1. FTS5 keyword candidates (wider net)
+        const ftsRows = this._ftsSearch(query, limit * 3);
+        const ftsScoreMap = new Map(); // docId → raw bm25 score
+        for (const r of ftsRows) ftsScoreMap.set(r.id, Math.abs(r.rank));
+
+        // 2. Load all stored embeddings
+        const allEmbeddings = this._db.prepare('SELECT doc_id, vector FROM embeddings').all();
+
+        // 3. Compute cosine similarity for every stored embedding
+        const vectorHits = [];
+        for (const e of allEmbeddings) {
+            try {
+                const vec = JSON.parse(e.vector);
+                const sim = cosineSimilarity(queryVec, vec);
+                if (sim > 0) vectorHits.push({ docId: e.doc_id, vectorScore: sim });
+            } catch (_) { }
+        }
+
+        // 4. Merge: build a unified candidate set
+        const allDocIds = new Set([...ftsScoreMap.keys(), ...vectorHits.map(v => v.docId)]);
+        const vectorScoreMap = new Map(vectorHits.map(v => [v.docId, v.vectorScore]));
+
+        // Normalize BM25 scores to [0,1]
+        const bm25Values = [...ftsScoreMap.values()];
+        const maxBm25 = bm25Values.length ? Math.max(...bm25Values) : 1;
+
+        // 5. Compute hybrid score for each candidate
+        const candidates = [];
+        for (const id of allDocIds) {
+            const doc = this._db.prepare('SELECT path, type, body, updated_at FROM documents WHERE id = ?').get(id);
+            if (!doc) continue;
+            if (types.length && !types.includes(doc.type)) continue;
+
+            const bm25Norm = (ftsScoreMap.get(id) || 0) / (maxBm25 || 1);
+            const vecScore = vectorScoreMap.get(id) || 0;
+            let hybrid = VECTOR_WEIGHT * vecScore + KEYWORD_WEIGHT * bm25Norm;
+
+            // Temporal decay for daily logs
+            if (doc.type === 'daily') {
+                const halfLifeMs = HALF_LIFE_DAYS * 24 * 60 * 60 * 1000;
+                const ageMs = Date.now() - (doc.updated_at || 0);
+                hybrid *= Math.pow(0.5, ageMs / halfLifeMs);
+            }
+
+            if (hybrid >= minScore) {
+                candidates.push({ id, path: doc.path, type: doc.type, body: doc.body, updated_at: doc.updated_at, score: hybrid, vectorScore: vecScore, keywordScore: bm25Norm });
+            }
+        }
+
+        candidates.sort((a, b) => b.score - a.score);
+
+        // 6. MMR re-rank for diversity
+        const hits = this._mmrRerank(candidates, limit, MMR_LAMBDA);
+
+        return { hits: hits.map(h => ({ path: h.path, type: h.type, updated_at: h.updated_at, score: h.score, snippet: h.body.slice(0, 200) })), total: hits.length, mode: 'hybrid' };
+    }
+
+    _mmrRerank(candidates, limit, lambda) {
+        if (candidates.length <= limit) return candidates;
+
+        const selected = [];
+        const remaining = [...candidates];
+
+        while (selected.length < limit && remaining.length > 0) {
+            let bestIdx = 0;
+            let bestMmr = -Infinity;
+
+            for (let i = 0; i < remaining.length; i++) {
+                const relevance = remaining[i].score;
+                let maxSim = 0;
+                for (const s of selected) {
+                    const sim = jaccardSimilarity(remaining[i].body, s.body);
+                    if (sim > maxSim) maxSim = sim;
+                }
+                const mmr = lambda * relevance - (1 - lambda) * maxSim;
+                if (mmr > bestMmr) { bestMmr = mmr; bestIdx = i; }
+            }
+
+            selected.push(remaining[bestIdx]);
+            remaining.splice(bestIdx, 1);
+        }
+
+        return selected;
+    }
+
+    // ── Keyword Search (FTS5 only) ─────────────────────────────────────────────
 
     search({ query, limit = 10, types = [] }) {
         if (!query || !query.trim()) return { hits: [], total: 0 };
 
-        const escaped = query.replace(/"/g, '""');
-
-        let rows;
-        try {
-            rows = this._db.prepare(`
-                SELECT d.path, d.type, d.updated_at,
-                       snippet(documents_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet,
-                       bm25(documents_fts) AS rank
-                FROM documents_fts
-                JOIN documents d ON d.path = documents_fts.path
-                WHERE documents_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-            `).all(`"${escaped}"`, limit * 2);
-        } catch (_) {
-            rows = this._db.prepare(`
-                SELECT d.path, d.type, d.updated_at,
-                       snippet(documents_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet,
-                       bm25(documents_fts) AS rank
-                FROM documents_fts
-                JOIN documents d ON d.path = documents_fts.path
-                WHERE documents_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-            `).all(escaped, limit * 2);
-        }
+        const ftsRows = this._ftsSearch(query, limit * 2);
 
         const now = Date.now();
         const halfLifeMs = HALF_LIFE_DAYS * 24 * 60 * 60 * 1000;
 
-        const scored = rows.map(r => {
+        const scored = ftsRows.map(r => {
             let score = Math.abs(r.rank);
             if (r.type === 'daily') {
                 const ageMs = now - (r.updated_at || 0);
-                const decay = Math.pow(0.5, ageMs / halfLifeMs);
-                score *= decay;
+                score *= Math.pow(0.5, ageMs / halfLifeMs);
             }
             return { ...r, score };
         });
 
         scored.sort((a, b) => b.score - a.score);
-
         let hits = scored;
         if (types.length) hits = hits.filter(h => types.includes(h.type));
         hits = hits.slice(0, limit);
 
         return { hits, total: hits.length };
+    }
+
+    _ftsSearch(query, limit) {
+        const escaped = query.replace(/"/g, '""');
+        const sql = `
+            SELECT d.id, d.path, d.type, d.updated_at,
+                   snippet(documents_fts, 0, '<mark>', '</mark>', '…', 32) AS snippet,
+                   bm25(documents_fts) AS rank
+            FROM documents_fts
+            JOIN documents d ON d.path = documents_fts.path
+            WHERE documents_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+        `;
+        try {
+            return this._db.prepare(sql).all(`"${escaped}"`, limit);
+        } catch (_) {
+            try { return this._db.prepare(sql).all(escaped, limit); }
+            catch (_2) { return []; }
+        }
     }
 
     // ── Daily Log ──────────────────────────────────────────────────────────────
@@ -320,7 +521,8 @@ class ProjectMemoryService extends EventEmitter {
         const rows = this._db.prepare(`SELECT type, COUNT(*) as count FROM documents GROUP BY type`).all();
         const byType = Object.fromEntries(rows.map(r => [r.type, r.count]));
         const total = Object.values(byType).reduce((s, n) => s + n, 0);
-        return { total, byType, dbPath: this._dbPath };
+        const embeddingCount = this._db.prepare('SELECT COUNT(*) as n FROM embeddings').get().n;
+        return { total, byType, embeddings: embeddingCount, embeddingQueue: this._embedQueue.size, dbPath: this._dbPath };
     }
 }
 

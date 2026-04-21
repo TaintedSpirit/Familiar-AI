@@ -55,6 +55,8 @@ async function register({ userDataDir, getActiveWindow, projectRoot }) {
         console.log(`[MemoryIpc] Project memory ready at ${projectRoot}`);
 
         ipcMain.handle('projectMemory:search', async (_e, args) => projectMemory.search(args || {}));
+        ipcMain.handle('projectMemory:searchHybrid', async (_e, args) => projectMemory.searchHybrid(args || {}));
+        ipcMain.handle('projectMemory:setEmbeddingKey', async (_e, key) => { projectMemory.setApiKey(key); return { ok: true }; });
         ipcMain.handle('projectMemory:getDailyLog', async (_e, date) => projectMemory.getDailyLog(date));
         ipcMain.handle('projectMemory:writeDailyLog', async (_e, date, content) => projectMemory.writeDailyLog(date, content));
         ipcMain.handle('projectMemory:readRootFiles', async () => projectMemory.readRootFiles());

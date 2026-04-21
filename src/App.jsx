@@ -7,6 +7,8 @@ import CommandBar from './components/UI/CommandBar';
 import InnerWorldHUD from './components/UI/InnerWorldHUD';
 import SettingsHUD from './components/UI/SettingsHUD';
 import DetachedChat from './components/UI/DetachedChat';
+import ActivityTicker from './components/UI/ActivityTicker';
+import GrimoireOnboarding from './components/UI/GrimoireOnboarding';
 
 // Hooks
 import { useGlobalHotkeys } from './hooks/useGlobalHotkeys';
@@ -26,6 +28,7 @@ import { audioGraph } from './services/voice/AudioGraph';
 import { useInnerWorldStore } from './services/innerworld/InnerWorldStore';
 import { useSettingsStore } from './services/settings/SettingsStore';
 import { useMemoryStore } from './services/memory/MemoryStore';
+import { useActivityStore } from './services/agent/ActivityStore';
 import { useWorkflowStore } from './services/workflow/WorkflowStore';
 import { useContextStore } from './services/context/ContextStore';
 import { useWatcherStore } from './services/watchers/WatcherStore';
@@ -104,6 +107,9 @@ function App() {
   const toggleAwareness = useVisionStore(s => s.toggleAwareness);
   const currentIntent = useContextStore(s => s.currentIntent);
 
+  const soulProfile = useSettingsStore(s => s.soulProfile);
+  const setAutonomyLevel = useSettingsStore(s => s.setAutonomyLevel);
+
   const {
     activePersona,
     companionScale, // Import scale
@@ -128,6 +134,7 @@ function App() {
   const [showNotifTray, setShowNotifTray] = useState(false);
 
   const addMessage = useMemoryStore(state => state.addMessage);
+  const updateMessage = useMemoryStore(state => state.updateMessage);
   const updateArtifact = useMemoryStore(state => state.updateArtifact);
   const activeProjectId = useMemoryStore(s => s.activeProjectId);
   const projects = useMemoryStore(s => s.projects);
@@ -354,15 +361,21 @@ function App() {
 
       let response;
       try {
-        const { setStreamingText, clearStreamingText, addMessage: addMsg } = useMemoryStore.getState();
+        const { setStreamingText, clearStreamingText, addMessage: addMsg, updateMessage: updateMsg } = useMemoryStore.getState();
+        const activityStore = useActivityStore.getState();
+        activityStore.clear();
         response = await agentLoop.run(text, messages, {
           onChunk: (chunk) => setStreamingText(chunk),
           onStep: (step) => {
             if (step.type === 'tool_call') {
-              const argSummary = step.args && Object.keys(step.args).length
-                ? ` → ${Object.values(step.args)[0]?.toString().slice(0, 80)}`
-                : '';
-              addMsg({ role: 'system', content: `[tool] ${step.name}${argSummary}`, id: Date.now() });
+              activityStore.addToolCall(step);
+              addMsg({ role: 'tool', toolCallId: step.id, id: step.id, name: step.name, args: step.args, result: null, status: 'working' });
+            } else if (step.type === 'tool_result') {
+              const isError = step.result && typeof step.result === 'object' && step.result.error;
+              activityStore.resolveToolCall(step.id, step.result, !!isError);
+              updateMsg(step.id, { result: step.result, status: isError ? 'error' : 'success' });
+            } else if (step.type === 'compacting') {
+              activityStore.setCompacting(step.active);
             }
           }
         });
@@ -466,7 +479,12 @@ function App() {
       >
         <CompanionWrapper
           shouldPause={isDragging}
-          blobProps={{ state: blobState, provider: 'gemini', idleThought }}
+          blobProps={{
+            state: blobState,
+            provider: 'gemini',
+            idleThought,
+            color: soulProfile?.energyColor
+          }}
           publicState={publicInnerWorld}
           settings={innerWorldSettings}
           isOpen={innerWorldOpen}
@@ -492,6 +510,7 @@ function App() {
 
   const renderCommandBar = () => (
     <>
+      <ActivityTicker />
       <div className="absolute bottom-10 left-1/2 -translate-x-1/2 w-auto h-auto pointer-events-none flex justify-center">
         <motion.div
           drag
@@ -657,6 +676,13 @@ function App() {
   );
 
   const { disableAotOnDrag, useOpaqueDrag, useIpcDrag } = useSettingsStore();
+
+  if (!soulProfile) {
+    return <GrimoireOnboarding onComplete={(profile) => {
+      const autonomy = SoulEngine.calculateAutonomy(profile);
+      setAutonomyLevel(autonomy);
+    }} />;
+  }
 
   return (
     <>

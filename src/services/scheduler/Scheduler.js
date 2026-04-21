@@ -1,16 +1,26 @@
-import { create } from 'zustand';
 import { useMemoryStore } from '../memory/MemoryStore';
+
+const QUIET_START = 23; // 11 PM
+const QUIET_END = 8;    // 8 AM
+const MIN_NUDGE_INTERVAL_MS = 30 * 60 * 1000; // 30 min between nudges
+
+function isQuietHours() {
+    const h = new Date().getHours();
+    return h >= QUIET_START || h < QUIET_END;
+}
 
 class SchedulerService {
     constructor() {
         this.listeners = [];
         this.idleTimer = null;
         this.nudgeTimer = null;
-        this.longTermTimer = null; // For ritual check-ins
+        this.longTermTimer = null;
 
-        this.shortIdleTime = 15000; // 15s for "idle thought"
-        this.nudgeTime = 60000 * 2; // 2m for "nudge"
-        this.ritualTime = 60000 * 30; // 30m for "ritual check"
+        this.shortIdleTime = 15000;    // 15s idle thought
+        this.nudgeTime = 60000 * 2;   // 2m nudge
+        this.ritualTime = 60000 * 30; // 30m ritual
+
+        this._lastNudgedAt = 0; // track last nudge to enforce 30-min recency
 
         this.thoughts = [
             "The data flows quietly.",
@@ -39,6 +49,15 @@ class SchedulerService {
     }
 
     notify(event, data) {
+        // Quiet hours: suppress all proactive messages
+        if (isQuietHours()) return;
+
+        // Recency check: don't nudge again within 30 minutes
+        if (event === 'NUDGE') {
+            if (Date.now() - this._lastNudgedAt < MIN_NUDGE_INTERVAL_MS) return;
+            this._lastNudgedAt = Date.now();
+        }
+
         this.listeners.forEach(fn => fn(event, data));
     }
 
@@ -81,14 +100,13 @@ class SchedulerService {
     }
 
     start() {
-        // Debounce the reset to avoid spamming on every mouse pixel move
         let timeout;
         const debouncedReset = () => {
             this.notify('ACTIVITY_DETECTED', null);
             if (timeout) clearTimeout(timeout);
-            this.clearTimers(); // Clear immediately on activity
-            timeout = setTimeout(() => this.reset(), 1000); // Restart timers after 1s of no activity
-        }
+            this.clearTimers();
+            timeout = setTimeout(() => this.reset(), 1000);
+        };
 
         window.addEventListener('mousemove', debouncedReset);
         window.addEventListener('keydown', debouncedReset);

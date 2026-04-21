@@ -102,6 +102,14 @@ export const projectMemoryClient = {
         const m = pmApi(); if (!m) return { hits: [], total: 0 };
         return m.search({ query, ...opts });
     },
+    async searchHybrid(query, opts = {}) {
+        const m = pmApi(); if (!m) return { hits: [], total: 0, mode: 'unavailable' };
+        return m.searchHybrid({ query, ...opts });
+    },
+    async setEmbeddingKey(key) {
+        const m = pmApi(); if (!m || !key) return;
+        return m.setEmbeddingKey(key);
+    },
     async getDailyLog(date) {
         const m = pmApi(); if (!m) return null;
         return m.getDailyLog(date);

@@ -93,6 +93,13 @@ export const useMemoryStore = create(persist((set, get) => ({
         )
     })),
 
+    updateMessage: (id, updates) => set((state) => ({
+        projects: state.projects.map(p => p.id === state.activeProjectId
+            ? { ...p, messages: p.messages.map(m => m.id === id ? { ...m, ...updates } : m) }
+            : p
+        )
+    })),
+
     clearMessages: () => set((state) => ({
         projects: state.projects.map(p => p.id === state.activeProjectId ?
             { ...p, messages: [] } : p

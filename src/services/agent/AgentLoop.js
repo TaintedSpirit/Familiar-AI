@@ -33,7 +33,9 @@ class AgentLoop {
         // Compact history if approaching token limits
         try {
             const { compactIfNeeded } = await import('../memory2/CompactionService');
+            onStep?.({ type: 'compacting', active: true });
             messages = await compactIfNeeded(messages);
+            onStep?.({ type: 'compacting', active: false });
         } catch { /* non-fatal */ }
 
         for (let i = 0; i < MAX_ITERATIONS; i++) {

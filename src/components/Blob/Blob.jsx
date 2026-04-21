@@ -5,6 +5,7 @@ import OrbRenderer from '../Forms/OrbRenderer';
 import GlyphRenderer from '../Forms/GlyphRenderer';
 import { useFormStore } from '../../services/forms/FormStore';
 import { useSpeechStore } from '../../services/voice/SpeechStore';
+import { useSettingsStore } from '../../services/settings/SettingsStore';
 
 const Blob = ({ state = 'idle', provider = 'gemini', idleThought = null, innerWorldState = null, shouldPause = false }) => {
     const [isNear, setIsNear] = useState(false);
@@ -71,11 +72,14 @@ const Blob = ({ state = 'idle', provider = 'gemini', idleThought = null, innerWo
         }
     };
 
+    const soulProfile = useSettingsStore(s => s.soulProfile);
+
     const getBlobColor = () => {
         if (innerWorldState?.risk === 'high') return '#fecaca'; // Red-200
         if (innerWorldState?.risk === 'medium') return '#fed7aa'; // Orange-200
         if (innerWorldState?.simulation === 'running') return '#e0e7ff'; // Indigo-100 (Thinking)
         if (innerWorldState?.blocked) return '#94a3b8'; // Slate-400
+        if (soulProfile?.energyColor && effectiveState === 'idle') return soulProfile.energyColor;
         return 'white';
     };
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useDragControls } from 'framer-motion';
 import { X, MessageSquare, Send, GripHorizontal, Mic, SquarePen, Search, Image as ImageIcon, LayoutGrid, Terminal } from 'lucide-react';
 import { useMemoryStore } from '../../services/memory/MemoryStore';
+import ToolBlock from './ToolBlock';
 
 const DetachedChat = ({ onClose, onSend }) => {
     // Get full store access for sidebar interactivity
@@ -25,10 +26,9 @@ const DetachedChat = ({ onClose, onSend }) => {
 
     useEffect(() => {
         scrollToBottom();
-        // Check if last message is user, if so, we are thinking
-        if (messages.length > 0) {
-            const lastMsg = messages[messages.length - 1];
-            setIsThinking(lastMsg.role === 'user');
+        const meaningful = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+        if (meaningful.length > 0) {
+            setIsThinking(meaningful[meaningful.length - 1].role === 'user');
         }
     }, [messages]);
 
@@ -145,25 +145,46 @@ const DetachedChat = ({ onClose, onSend }) => {
                         )}
 
                         <AnimatePresence mode='popLayout'>
-                            {messages.map((msg, idx) => (
-                                <motion.div
-                                    key={msg.id || idx}
-                                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    transition={{ duration: 0.3, ease: "easeOut" }}
-                                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                                >
-                                    <div
-                                        className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm font-light leading-relaxed whitespace-pre-wrap shadow-sm
-                                                ${msg.role === 'user'
-                                                ? 'bg-blue-500/10 border border-blue-500/20 text-blue-100 rounded-tr-sm'
-                                                : 'bg-white/5 border border-white/5 text-white/90 rounded-tl-sm'
-                                            }`}
+                            {messages.map((msg, idx) => {
+                                if (msg.role === 'tool') {
+                                    return (
+                                        <motion.div
+                                            key={msg.id || idx}
+                                            initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                                            transition={{ duration: 0.3, ease: 'easeOut' }}
+                                            className="flex justify-start"
+                                        >
+                                            <ToolBlock
+                                                name={msg.name}
+                                                args={msg.args}
+                                                result={msg.result}
+                                                status={msg.status}
+                                            />
+                                        </motion.div>
+                                    );
+                                }
+                                if (msg.role === 'system') return null;
+                                return (
+                                    <motion.div
+                                        key={msg.id || idx}
+                                        initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        transition={{ duration: 0.3, ease: "easeOut" }}
+                                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                                     >
-                                        {msg.content}
-                                    </div>
-                                </motion.div>
-                            ))}
+                                        <div
+                                            className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm font-light leading-relaxed whitespace-pre-wrap shadow-sm
+                                                    ${msg.role === 'user'
+                                                    ? 'bg-blue-500/10 border border-blue-500/20 text-blue-100 rounded-tr-sm'
+                                                    : 'bg-white/5 border border-white/5 text-white/90 rounded-tl-sm'
+                                                }`}
+                                        >
+                                            {msg.content}
+                                        </div>
+                                    </motion.div>
+                                );
+                            })}
                         </AnimatePresence>
 
                         {/* Streaming / thinking indicator */}
