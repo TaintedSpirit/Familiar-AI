@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => ipcRenderer.removeListener('context-update', subscription);
     },
     captureContextSnapshot: () => ipcRenderer.invoke('capture-context-snapshot'),
+    getCursorPosition: () => ipcRenderer.invoke('get-cursor-position'),
 
     // Discord Bot Bridge
     discordStart: (token, companionChannels) => ipcRenderer.invoke('discord:start', token, companionChannels),

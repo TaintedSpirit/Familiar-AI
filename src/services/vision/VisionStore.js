@@ -41,7 +41,7 @@ export const useVisionStore = create((set, get) => ({
         }
     },
 
-    // Interface with Electron
+    // Interface with Electron — returns { screenshot, metadata } | null
     captureNow: async () => {
         const { isAwarenessEnabled } = get();
         if (!isAwarenessEnabled) {
@@ -51,18 +51,20 @@ export const useVisionStore = create((set, get) => ({
         }
 
         try {
-            // Signal "Visualizing" state (e.g. for UI loaders)
             set({ visionStatus: 'visualizing' });
 
             if (window.electronAPI && window.electronAPI.captureContextSnapshot) {
-                const screenshot = await window.electronAPI.captureContextSnapshot();
+                const atomic = await window.electronAPI.captureContextSnapshot();
+                if (!atomic) { set({ visionStatus: 'stale' }); return null; }
+                const { screenshot, metadata } = atomic;
                 get().setCapture(screenshot, 'manual');
-                return screenshot;
+                return { screenshot, metadata };
             }
         } catch (error) {
             console.error("Vision Capture Failed:", error);
-            set({ visionStatus: 'stale' }); // Fallback
+            set({ visionStatus: 'stale' });
         }
+        return null;
     },
 
     // Start a heartbeat to update status

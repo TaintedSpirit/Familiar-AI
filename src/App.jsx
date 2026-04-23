@@ -22,6 +22,7 @@ import { cronEngine } from './services/watchers/CronEngine';
 import { scheduler } from './services/scheduler/Scheduler';
 import { consolidationLoop } from './services/memory2/ConsolidationLoop';
 import { soulLoader } from './services/soul/SoulLoader';
+import { SoulEngine } from './services/soul/SoulEngine';
 import { mcpLoader } from './services/agent/MCPLoader';
 import { watcherEngine } from './services/watchers/WatcherEngine';
 import { audioGraph } from './services/voice/AudioGraph';
@@ -510,7 +511,6 @@ function App() {
 
   const renderCommandBar = () => (
     <>
-      <ActivityTicker />
       <div className="absolute bottom-10 left-1/2 -translate-x-1/2 w-auto h-auto pointer-events-none flex justify-center">
         <motion.div
           drag

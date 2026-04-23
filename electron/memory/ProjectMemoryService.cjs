@@ -166,7 +166,9 @@ class ProjectMemoryService extends EventEmitter {
 
         const removed = this._pruneOrphans(seen);
         const pending = this._embedQueue.size;
-        console.log(`[ProjectMemory] scan: indexed=${indexed}, removed=${removed}, embedding queue=${pending}`);
+        try {
+            console.log(`[ProjectMemory] scan: indexed=${indexed}, removed=${removed}, embedding queue=${pending}`);
+        } catch (_) { /* ignore EPIPE */ }
         return { indexed, removed };
     }
 
@@ -264,7 +266,9 @@ class ProjectMemoryService extends EventEmitter {
         for (const d of docs) this._embedQueue.add(d.id);
 
         if (this._embedQueue.size > 0) {
-            console.log(`[ProjectMemory] embedding queue: ${this._embedQueue.size} docs`);
+            try {
+                console.log(`[ProjectMemory] embedding queue: ${this._embedQueue.size} docs`);
+            } catch (_) { }
             this._flushEmbedQueue();
         }
     }

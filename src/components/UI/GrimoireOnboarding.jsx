@@ -398,7 +398,7 @@ const GrimoireOnboarding = ({ onComplete }) => {
                     onClick={() => {
                         const profile = { ...answers, boundAt: Date.now() };
                         setSoulProfile(profile);
-                        setCustomPersonaPrompt(buildPersonaPrompt(profile));
+                        setCustomPersonaPrompt(SoulEngine.buildPersonaPrompt(profile));
                         setHasOnboarded(true);
                         onComplete?.(profile);
                     }}

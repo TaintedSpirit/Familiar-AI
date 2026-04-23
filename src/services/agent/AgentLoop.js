@@ -25,8 +25,13 @@ class AgentLoop {
         // Internal message thread for the LLM (separate from UI store)
         let messages = [
             ...conversationHistory
-                .filter(m => m.role === 'user' || m.role === 'assistant')
-                .map(m => ({ role: m.role, content: String(m.content || '') })),
+                .map(m => {
+                    const mapped = { role: m.role, content: m.content || null };
+                    if (m.toolCalls) mapped.toolCalls = m.toolCalls;
+                    if (m.toolCallId) mapped.toolCallId = m.toolCallId;
+                    if (m.toolName) mapped.toolName = m.toolName;
+                    return mapped;
+                }),
             { role: 'user', content: prompt }
         ];
 

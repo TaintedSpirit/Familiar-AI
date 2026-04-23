@@ -6,6 +6,7 @@ import { cronEngine } from '../watchers/CronEngine';
 import { useSettingsStore } from '../settings/SettingsStore';
 import { toolApprovalGate } from './ToolApprovalGate';
 import { agentSpawner } from './AgentSpawner';
+import { AGENT_REGISTRY } from './AgentRegistry';
 
 export const toolExecutor = {
     async run(name, args) {
@@ -31,7 +32,7 @@ export const toolExecutor = {
                 case 'generate_image':      return await generateImage(args.prompt, args.size);
                 case 'schedule_task':       return await scheduleTask(args.cron, args.intent, args.id);
                 case 'remove_scheduled_task': return await removeScheduledTask(args.id);
-                case 'spawn_agent':         return await spawnAgent(args.task, args.label);
+                case 'spawn_agent':         return await spawnAgent(args.task, args.label, args.agentId);
                 case 'list_spawns':         return agentSpawner.list();
                 default:                    return { error: `Unknown tool: ${name}` };
             }
@@ -70,13 +71,101 @@ async function scrapeUrl(url) {
 
 async function getScreenContext() {
     try {
-        const snapshot = await useContextStore.getState().captureContext();
-        const { activeApp, activeTitle } = useContextStore.getState();
-        return {
-            app: activeApp || 'Unknown',
-            title: activeTitle || 'Unknown',
-            hasScreenshot: !!snapshot
+        // Force capture regardless of awareness toggle — agent explicitly asked to see
+        const visionStore = (await import('../vision/VisionStore')).useVisionStore.getState();
+        const { analyzeScreen }      = await import('../perception/PerceptionEngine.js');
+        const { usePerceptionStore } = await import('../perception/PerceptionStore.js');
+        const { inferIntent }        = await import('../perception/IntentInferrer.js');
+
+        let screenshot = null;
+        let metadata   = null;
+
+        try {
+            if (window.electronAPI?.captureContextSnapshot) {
+                const atomic = await window.electronAPI.captureContextSnapshot();
+                if (atomic) {
+                    ({ screenshot, metadata } = atomic);
+                    visionStore.setCapture(screenshot, 'manual');
+                }
+            }
+        } catch (captureErr) {
+            console.warn('[ToolExecutor] Screenshot capture failed:', captureErr.message);
+        }
+
+        if (!screenshot) {
+            return [
+                `Active Application: ${metadata?.app || 'Unknown'}`,
+                `Window Title: ${metadata?.title || 'Unknown'}`,
+                'Screenshot capture failed — describe based on window title only.',
+            ].join('\n');
+        }
+
+        // Get live cursor position
+        let cursor = { x: 0, y: 0 };
+        try {
+            if (window.electronAPI?.getCursorPosition) cursor = await window.electronAPI.getCursorPosition();
+        } catch {}
+
+        // Structured perception — OCR + element detection
+        const perception = await analyzeScreen(screenshot, metadata, cursor);
+
+        // State memory + change detection
+        const perceptionStore = usePerceptionStore.getState();
+        const diff   = perceptionStore.push(perception);
+        const intent = inferIntent(perception, perceptionStore.history);
+        perceptionStore.setIntent(intent);
+
+        // Update ContextStore for Router image attachment and system prompt injection
+        useContextStore.getState().setSharedContext({
+            app: metadata.app,
+            title: metadata.title,
+            url: metadata.url,
+            timestamp: Date.now(),
+            screenshot,
+            perception,
+            intent,
+        });
+        useContextStore.getState().setLiveContext({
+            app: metadata.app, title: metadata.title, url: metadata.url,
+        });
+
+        // Build structured tool result for the LLM
+        const topText  = perception.visible_text.slice(0, 8).join(' | ') || '(none detected)';
+        const elements = perception.ui_elements
+            .map(e => `${e.type}:${e.text || e.placeholder || e.href}`)
+            .join(', ');
+        const changeNote = diff?.appChanged
+            ? `Change detected: switched to ${perception.app}`
+            : diff?.added?.length
+            ? `New content: ${diff.added.slice(0, 3).join(' | ')}`
+            : null;
+
+        const structured = {
+            app:               perception.app,
+            active_panel:      perception.active_panel,
+            visible_text:      perception.visible_text.slice(0, 20),
+            ui_elements:       perception.ui_elements,
+            has_error:         perception.has_error,
+            cursor,
+            intent:            intent.intent,
+            intent_confidence: intent.confidence,
+            timestamp:         perception.timestamp,
         };
+
+        return [
+            `SCREEN PERCEPTION REPORT`,
+            `Active App:    ${perception.app}`,
+            `Window:        ${perception.active_panel}`,
+            metadata?.url ? `URL:           ${metadata.url}` : null,
+            `Visible Text:  ${topText}`,
+            elements       ? `UI Elements:   ${elements}` : null,
+            `Intent:        ${intent.intent} (${Math.round(intent.confidence * 100)}% confidence)`,
+            changeNote     || null,
+            perception.has_error ? `⚠ Error content detected on screen` : null,
+            `Cursor:        x=${cursor.x}, y=${cursor.y}`,
+            `\nFull structured data:\n${JSON.stringify(structured, null, 2)}`,
+            `\nScreenshot attached for visual confirmation.`,
+        ].filter(Boolean).join('\n');
     } catch (e) {
         return { error: e.message };
     }
@@ -202,14 +291,29 @@ async function removeScheduledTask(id) {
     return { success: true, id };
 }
 
-async function spawnAgent(task, label) {
+async function spawnAgent(task, label, agentId) {
     if (!task) return { error: 'task is required' };
     return agentSpawner.spawn(task, label, async (outcome) => {
-        const { useWatcherStore } = await import('../watchers/WatcherStore');
         const summary = outcome.result?.reply || outcome.result?.content || 'Task complete.';
+        const profile = agentId ? AGENT_REGISTRY[agentId] : null;
+        const agentName = profile ? `${profile.archetype} (${profile.name})` : 'Background Agent';
+        const taskLabel = outcome.label || task.slice(0, 40);
+
+        // WatcherStore notification for the activity ticker
+        const { useWatcherStore } = await import('../watchers/WatcherStore');
         useWatcherStore.getState().addNotification(
-            `[Agent: ${outcome.label || task.slice(0, 40)}] ${summary.slice(0, 120)} (${outcome.elapsed}s)`,
+            `[${agentName}: ${taskLabel}] ${summary.slice(0, 120)} (${outcome.elapsed}s)`,
             'medium'
         );
-    });
+
+        // Inject AGENT_ANNOUNCE into the conversation so the Familiar sees the result in context
+        try {
+            const { useMemoryStore } = await import('../memory/MemoryStore');
+            useMemoryStore.getState().addMessage({
+                role: 'assistant',
+                content: `[AGENT_ANNOUNCE] ${agentName} completed "${taskLabel}" in ${outcome.elapsed}s.\n\nResult:\n${summary}`,
+                isAgentAnnounce: true,
+            });
+        } catch { /* non-fatal if store is unavailable */ }
+    }, agentId);
 }

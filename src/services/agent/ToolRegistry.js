@@ -25,7 +25,7 @@ const TOOLS = [
     },
     {
         name: 'get_screen_context',
-        description: 'Capture a screenshot of the current screen and return the active window title.',
+        description: 'Capture the screen and run structured perception: OCR to extract visible text, UI element detection (buttons, inputs, URLs), cursor position, and heuristic intent inference. Returns a structured JSON report AND attaches the screenshot to your visual context. Call this whenever the user asks what is on their screen, what they are working on, or when you need grounded screen-state data to answer a question.',
         parameters: { type: 'object', properties: {} }
     },
     {
@@ -139,12 +139,13 @@ const TOOLS = [
     },
     {
         name: 'spawn_agent',
-        description: 'Spawn a background agent to handle a long or parallel task without blocking the current conversation. The result is delivered as a notification when done.',
+        description: 'Spawn a specialist background agent to handle a long or parallel task without blocking the conversation. The result is announced in chat when done.',
         parameters: {
             type: 'object',
             properties: {
                 task: { type: 'string', description: 'Full task description for the background agent' },
-                label: { type: 'string', description: 'Short human-readable label for tracking, e.g. "Research quantum computing"' }
+                label: { type: 'string', description: 'Short human-readable label for tracking, e.g. "Research quantum computing"' },
+                agentId: { type: 'string', description: 'Optional specialist profile: "researcher" (web research + citations), "builder" (code + file ops), "auditor" (security review). Omit for a general agent.' }
             },
             required: ['task']
         }

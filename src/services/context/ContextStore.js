@@ -68,30 +68,35 @@ export const useContextStore = create((set, get) => ({
     }),
 
     captureContext: async () => {
-        // Enforce Awareness Check (Single Source of Truth: VisionStore)
-        // Delegate to VisionStore to ensure 'visionStatus' and 'freshness' are updated globally.
         const visionStore = useVisionStore.getState();
-        const screenshot = await visionStore.captureNow();
+        const result = await visionStore.captureNow(); // { screenshot, metadata } | null
 
-        if (!screenshot) {
+        if (!result) {
             console.warn("[ContextStore] Capture failed or blocked by VisionStore.");
             return null;
         }
 
-        const state = get();
+        const { screenshot, metadata } = result;
 
+        // Atomically update live state from the capture — never stale after a manual capture
+        if (metadata.app !== null) {
+            set({ activeApp: metadata.app, activeTitle: metadata.title, activeUrl: metadata.url });
+        }
+
+        const state = get();
         const snapshot = {
-            app: state.activeApp,
-            title: state.activeTitle,
-            url: state.activeUrl,
+            app: metadata.app ?? state.activeApp,
+            title: metadata.title ?? state.activeTitle,
+            url: metadata.url ?? state.activeUrl,
             timestamp: Date.now(),
-            screenshot: screenshot // Base64
+            screenshot
         };
 
         set({ sharedContext: snapshot });
         return snapshot;
     },
 
+    setSharedContext: (ctx) => set({ sharedContext: ctx }),
     clearContext: () => set({ sharedContext: null }),
 
     // Plan Actions

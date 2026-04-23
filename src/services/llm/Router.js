@@ -6,6 +6,7 @@ import { useMemoryStore } from "../memory/MemoryStore";
 import { useWorkflowStore } from "../workflow/WorkflowStore";
 import { workflowEngine } from "../workflow/WorkflowEngine";
 import { useVisionStore } from "../vision/VisionStore";
+import { useContextStore } from "../context/ContextStore";
 import { useFormStore } from "../forms/FormStore";
 import { FormCapabilities } from "../forms/FormCapabilities";
 import { COMPANION_PERSONA, detectExplainMode } from "./Persona";
@@ -141,6 +142,11 @@ export class LLMRouter {
             // 3g. Vision State
             const { visionStatus } = useVisionStore.getState();
 
+            // 3h. Structured Perception State
+            const { usePerceptionStore } = await import('../perception/PerceptionStore.js').catch(() => ({ usePerceptionStore: null }));
+            const perception = usePerceptionStore?.getState().current ?? null;
+            const lastIntent = usePerceptionStore?.getState().lastIntent ?? null;
+
             // 4. Construct System Prompt
             const isExplainMode = detectExplainMode(prompt);
 
@@ -211,6 +217,9 @@ export class LLMRouter {
     - Active Window: ${awarenessEnabled && activeTitle ? activeTitle : "Unknown"} (${activeApp || "Unknown"})
     - Vision: ${visionStatus === 'live' ? "Live View Available" : "Stale/Offline"}
     - Focus Goal: ${focusMode.active ? focusMode.goal : "None"}
+    ${lastIntent ? `- Inferred Intent: ${lastIntent.intent} (${Math.round(lastIntent.confidence * 100)}% confidence)` : ''}
+    ${perception?.visible_text?.length ? `- Screen Content: ${perception.visible_text.slice(0, 3).join(' | ')}` : ''}
+    ${perception?.has_error ? '- ⚠ Error detected on screen' : ''}
     
     ${searchResults ? `RESEARCH DATA:\n${searchResults}` : ''}
     ${websiteContent ? `WEBSITE CONTEXT:\n${websiteContent}` : ''}
@@ -260,13 +269,10 @@ export class LLMRouter {
                 // Prepare message parts
                 let messageParts = [prompt];
 
-                // Attach Screenshot if available in Shared Context AND RECENT (< 5 mins)
-                // Attach Screenshot if available in Shared Context AND RECENT (< 5 mins)
-                if (sharedContext && sharedContext.screenshot && (Date.now() - sharedContext.timestamp < 300000)) {
-                    // NOTE: The App.jsx will handle stripping the [INTENT: X] tag from the completion.
-                    // Remove data URL prefix (e.g. "data:image/png;base64,")
+                // Vision: Attach Screenshot if available and fresh
+                const { sharedContext } = useContextStore.getState();
+                if (sharedContext?.screenshot && (Date.now() - sharedContext.timestamp < 300000)) {
                     const base64Image = sharedContext.screenshot.replace(/^data:image\/(png|jpeg);base64,/, "");
-
                     messageParts.push({
                         inlineData: {
                             data: base64Image,
@@ -274,10 +280,6 @@ export class LLMRouter {
                         }
                     });
                     console.log("[Router] Attaching screenshot to Gemini request");
-
-                    // Clear context after using it once? 
-                    // Maybe not, let context store handle clearing via command "clear context"
-                    // For now, we attach it.
                 }
 
                 // Reset fallback on fresh Gemini call
@@ -358,7 +360,10 @@ export class LLMRouter {
                             messages: [
                                 { role: 'system', content: systemPrompt },
                                 ...cleanHistory,
-                                { role: 'user', content: prompt }
+                                { 
+                                    role: 'user', 
+                                    content: this._formatOpenAIContent(prompt, useContextStore.getState().sharedContext)
+                                }
                             ],
                             temperature: temperature || 0.7,
                             max_tokens: 4000,
@@ -450,7 +455,10 @@ export class LLMRouter {
                             system: systemPrompt,
                             messages: [
                                 ...cleanHistory,
-                                { role: 'user', content: prompt }
+                                { 
+                                    role: 'user', 
+                                    content: this._formatAnthropicContent(prompt, useContextStore.getState().sharedContext)
+                                }
                             ],
                             temperature: temperature || 0.7
                         })
@@ -679,6 +687,10 @@ export class LLMRouter {
     // ─── Agentic Tool-Use Methods ────────────────────────────────────────────
 
     async queryWithTools(messages, tools, onChunk = null) {
+        // Sort tools alphabetically so the serialized payload is deterministic across calls,
+        // maximizing prompt-cache hits on providers that cache tool definitions.
+        const sortedTools = [...tools].sort((a, b) => a.name.localeCompare(b.name));
+
         const { aiProvider, geminiApiKey, openaiApiKey, anthropicApiKey, model: selectedModel, temperature } = useSettingsStore.getState();
 
         const { soulLoader } = await import('../soul/SoulLoader');
@@ -694,23 +706,88 @@ export class LLMRouter {
             skillsContext = await skillLoader.getSkillsForPrompt();
         } catch { /* non-fatal */ }
 
-        const systemPrompt = `You are Antigravity, an AI agent with access to tools. Use tools to fulfill the user's request accurately and completely. When you have enough information, provide a final answer — do not call more tools than necessary.
+        const { sharedContext } = useContextStore.getState();
+        const hasVision = sharedContext?.screenshot && (Date.now() - sharedContext.timestamp < 300000);
+
+        // Structured perception context for the tool-use system prompt
+        const { usePerceptionStore: usePS } = await import('../perception/PerceptionStore.js').catch(() => ({ usePerceptionStore: null }));
+        const toolPerception = usePS?.getState().current ?? null;
+        const toolIntent     = usePS?.getState().lastIntent ?? null;
+        const perceptionBlock = toolPerception
+            ? `SCREEN STATE (last perception scan):
+- App: ${toolPerception.app} | Panel: ${toolPerception.active_panel}
+- Intent: ${toolIntent?.intent || 'unknown'} (${Math.round((toolIntent?.confidence || 0) * 100)}% confidence)
+- Visible Text: ${toolPerception.visible_text.slice(0, 4).join(' | ') || 'none'}
+- UI Elements: ${toolPerception.ui_elements.map(e => `${e.type}:${e.text || e.placeholder || e.href}`).join(', ') || 'none'}
+${toolPerception.has_error ? '- ⚠ Error content visible on screen' : ''}`
+            : '';
+
+        const systemPrompt = `You are Antigravity, an AI orchestrator with access to a "Pack" of specialized sub-agents.
+Use tools to fulfill the user's request. For complex, long-running, or multi-step tasks (research, coding, auditing), prefer delegating to a specialist via the "spawn_agent" tool.
+
+THE PACK:
+- The Scribe (researcher): Best for deep web research and citations.
+- The Artificer (builder): Best for code generation and file operations.
+- The Sentinel (auditor): Best for security reviews and logic checks.
+
+VISION & SCREEN AWARENESS:
+You have structured screen perception. When the user asks what is on their screen or needs screen-based help:
+1. Call "get_screen_context" — it captures a screenshot AND runs OCR to extract visible text, UI elements, cursor position, and infers user intent.
+2. The tool returns a structured SCREEN PERCEPTION REPORT. Reason over the structured data first, then confirm with the screenshot attached to your visual context.
+3. Be specific: reference exact text, button labels, and error messages from the structured report.
+${hasVision ? '⚡ A recent screenshot is already attached to this message. You can describe what you see directly.' : ''}
+${perceptionBlock ? `\n${perceptionBlock}` : ''}
+
+When you spawn an agent, you can continue the conversation with the user. The specialist will report its findings back to this chat when complete.
 ${soulContext}
 ${skillsContext}
 Current time: ${timeStr}, ${dateStr}`;
 
         if (aiProvider === 'anthropic') {
-            return this._queryToolsAnthropic(messages, tools, systemPrompt, { anthropicApiKey, selectedModel, temperature });
+            return this._queryToolsAnthropic(messages, sortedTools, systemPrompt, { anthropicApiKey, selectedModel, temperature, sharedContext });
         } else if (aiProvider === 'openai') {
-            return this._queryToolsOpenAI(messages, tools, systemPrompt, { openaiApiKey, selectedModel, temperature });
+            return this._queryToolsOpenAI(messages, sortedTools, systemPrompt, { openaiApiKey, selectedModel, temperature, sharedContext });
         } else if (aiProvider === 'gemini') {
-            return this._queryToolsGemini(messages, tools, systemPrompt, { geminiApiKey, selectedModel, temperature });
+            return this._queryToolsGemini(messages, sortedTools, systemPrompt, { geminiApiKey, selectedModel, temperature, sharedContext });
         } else {
             return { type: 'text', content: 'Tool use requires Anthropic, OpenAI, or Gemini as the active provider.' };
         }
     }
 
-    async _queryToolsAnthropic(messages, tools, systemPrompt, { anthropicApiKey, selectedModel, temperature }) {
+    _formatOpenAIContent(text, sharedContext) {
+        if (!sharedContext?.screenshot || (Date.now() - sharedContext.timestamp > 300000)) {
+            return text;
+        }
+        return [
+            { type: "text", text },
+            {
+                type: "image_url",
+                image_url: { url: sharedContext.screenshot }
+            }
+        ];
+    }
+
+    _formatAnthropicContent(text, sharedContext) {
+        if (!sharedContext?.screenshot || (Date.now() - sharedContext.timestamp > 300000)) {
+            return text;
+        }
+        const base64Image = sharedContext.screenshot.replace(/^data:image\/(png|jpeg);base64,/, "");
+        const mediaType = sharedContext.screenshot.match(/^data:(image\/[a-z]+);base64/)?.[1] || "image/png";
+        
+        return [
+            { type: "text", text },
+            {
+                type: "image",
+                source: {
+                    type: "base64",
+                    media_type: mediaType,
+                    data: base64Image
+                }
+            }
+        ];
+    }
+
+    async _queryToolsAnthropic(messages, tools, systemPrompt, { anthropicApiKey, selectedModel, temperature, sharedContext }) {
         if (!anthropicApiKey) return { type: 'text', content: 'Anthropic API key required for agent mode.' };
 
         const anthropicTools = tools.map(t => ({
@@ -732,7 +809,7 @@ Current time: ${timeStr}, ${dateStr}`;
                 max_tokens: 4096,
                 system: systemPrompt,
                 tools: anthropicTools,
-                messages: this._toAnthropicMessages(messages),
+                messages: this._toAnthropicMessages(messages, sharedContext),
                 temperature: temperature || 0.7
             })
         });
@@ -751,7 +828,7 @@ Current time: ${timeStr}, ${dateStr}`;
         return { type: 'text', content: text };
     }
 
-    async _queryToolsOpenAI(messages, tools, systemPrompt, { openaiApiKey, selectedModel, temperature }) {
+    async _queryToolsOpenAI(messages, tools, systemPrompt, { openaiApiKey, selectedModel, temperature, sharedContext }) {
         if (!openaiApiKey) return { type: 'text', content: 'OpenAI API key required for agent mode.' };
 
         const openAITools = tools.map(t => ({
@@ -767,7 +844,7 @@ Current time: ${timeStr}, ${dateStr}`;
             },
             body: JSON.stringify({
                 model: selectedModel?.startsWith('gpt') ? selectedModel : 'gpt-4o',
-                messages: [{ role: 'system', content: systemPrompt }, ...this._toOpenAIMessages(messages)],
+                messages: [{ role: 'system', content: systemPrompt }, ...this._toOpenAIMessages(messages, sharedContext)],
                 tools: openAITools,
                 temperature: temperature || 0.7
             })
@@ -789,7 +866,7 @@ Current time: ${timeStr}, ${dateStr}`;
         return { type: 'text', content: choice.message.content || '' };
     }
 
-    async _queryToolsGemini(messages, tools, systemPrompt, { geminiApiKey, selectedModel, temperature }) {
+    async _queryToolsGemini(messages, tools, systemPrompt, { geminiApiKey, selectedModel, temperature, sharedContext }) {
         if (!geminiApiKey) return { type: 'text', content: 'Gemini API key required for agent mode.' };
 
         if (!this.genAI || this.lastGeminiKey !== geminiApiKey) {
@@ -813,8 +890,57 @@ Current time: ${timeStr}, ${dateStr}`;
         const history = this._toGeminiMessages(messages.slice(0, -1));
         const lastMsg = messages[messages.length - 1];
         const chat = model.startChat({ history });
-        const result = await chat.sendMessage(lastMsg?.content || '');
-        const parts = result.response.candidates?.[0]?.content?.parts || [];
+
+        // Build the parts to send based on the last message type
+        let messageParts = [];
+        let shouldFollowUpWithImage = false;
+
+        if (lastMsg?.role === 'tool') {
+            // After a functionCall, Gemini requires a functionResponse — NOT plain text
+            // IMPORTANT: Cannot mix functionResponse with inlineData in the same call
+            messageParts.push({
+                functionResponse: {
+                    name: lastMsg.toolName || 'unknown',
+                    response: { result: lastMsg.content || '' }
+                }
+            });
+            console.log("[Router] Sending functionResponse to Gemini for tool:", lastMsg.toolName);
+            // If we have a screenshot, we'll send it as a follow-up after the functionResponse
+            shouldFollowUpWithImage = !!(sharedContext?.screenshot && (Date.now() - sharedContext.timestamp < 300000));
+        } else {
+            // Normal user message — can include image inline
+            messageParts.push(lastMsg?.content || '');
+            if (sharedContext?.screenshot && (Date.now() - sharedContext.timestamp < 300000)) {
+                const base64Image = sharedContext.screenshot.replace(/^data:image\/(png|jpeg);base64,/, "");
+                messageParts.push({
+                    inlineData: {
+                        data: base64Image,
+                        mimeType: "image/png"
+                    }
+                });
+                console.log("[Router] Attaching screenshot to Gemini user message");
+            }
+        }
+
+        let result = await chat.sendMessage(messageParts);
+        let parts = result.response.candidates?.[0]?.content?.parts || [];
+
+        // Follow-up: If the last message was a tool result AND we have a screenshot,
+        // send the image in a second turn so the model can actually see it
+        if (shouldFollowUpWithImage) {
+            const base64Image = sharedContext.screenshot.replace(/^data:image\/(png|jpeg);base64,/, "");
+            console.log("[Router] Sending follow-up screenshot to Gemini for visual analysis");
+            result = await chat.sendMessage([
+                `Screenshot captured at ${new Date(sharedContext.timestamp).toLocaleTimeString()}. Active window: "${sharedContext.title || 'Unknown'}" (${sharedContext.app || 'Unknown'}). Describe what you see and confirm whether the visible content matches the reported application. If there is a discrepancy between the window name and screenshot content, state it explicitly.`,
+                {
+                    inlineData: {
+                        data: base64Image,
+                        mimeType: "image/png"
+                    }
+                }
+            ]);
+            parts = result.response.candidates?.[0]?.content?.parts || [];
+        }
 
         const functionCalls = parts.filter(p => p.functionCall);
         if (functionCalls.length) {
@@ -830,11 +956,18 @@ Current time: ${timeStr}, ${dateStr}`;
         return { type: 'text', content: text };
     }
 
-    _toAnthropicMessages(messages) {
+    _toAnthropicMessages(messages, sharedContext) {
         const result = [];
-        for (const msg of messages) {
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            if (msg.role === 'system') continue; // Anthropic system is a separate param
             if (msg.role === 'user') {
-                result.push({ role: 'user', content: msg.content || '' });
+                // If it's the last user message, attach vision context
+                const isLastUser = !messages.slice(i + 1).some(m => m.role === 'user');
+                const content = isLastUser
+                    ? this._formatAnthropicContent(msg.content || '', sharedContext)
+                    : (msg.content || '');
+                result.push({ role: 'user', content });
             } else if (msg.role === 'assistant') {
                 if (msg.toolCalls?.length) {
                     result.push({
@@ -847,44 +980,135 @@ Current time: ${timeStr}, ${dateStr}`;
                     result.push({ role: 'assistant', content: msg.content || '' });
                 }
             } else if (msg.role === 'tool') {
+                // Anthropic requires tool_result to follow an assistant message with tool_use
+                const prev = result[result.length - 1];
+                const prevHasToolUse = prev?.role === 'assistant' && Array.isArray(prev?.content) && prev.content.some(c => c.type === 'tool_use');
+                if (prevHasToolUse) {
+                    result.push({
+                        role: 'user',
+                        content: [{ type: 'tool_result', tool_use_id: msg.toolCallId, content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '') }]
+                    });
+                } else {
+                    console.warn('[Router] Dropping orphaned tool result from Anthropic history:', msg.toolCallId);
+                }
+            }
+        }
+        return result;
+    }
+
+    _toOpenAIMessages(messages, sharedContext) {
+        // First pass: convert all messages
+        const converted = messages
+            .filter(msg => msg.role !== 'system') // OpenAI system goes as a separate param
+            .map((msg, i) => {
+                if (msg.role === 'tool') {
+                    return {
+                        role: 'tool',
+                        tool_call_id: msg.toolCallId || `tool_${i}`,
+                        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '')
+                    };
+                }
+                if (msg.toolCalls?.length) {
+                    return {
+                        role: 'assistant',
+                        content: null,
+                        tool_calls: msg.toolCalls.map(tc => ({
+                            id: tc.id, type: 'function',
+                            function: { name: tc.name, arguments: JSON.stringify(tc.args) }
+                        }))
+                    };
+                }
+                const isLastUser = msg.role === 'user' && !messages.slice(i + 1).some(m => m.role === 'user');
+                const content = isLastUser
+                    ? this._formatOpenAIContent(msg.content || '', sharedContext)
+                    : (msg.content || '');
+                return { role: msg.role === 'assistant' ? 'assistant' : 'user', content };
+            });
+
+        // Second pass: remove orphaned tool messages (not preceded by assistant with tool_calls)
+        // OpenAI strictly requires: assistant[tool_calls] → tool → tool → ... pattern
+        const sanitized = [];
+        for (let i = 0; i < converted.length; i++) {
+            const msg = converted[i];
+            if (msg.role === 'tool') {
+                const prev = sanitized[sanitized.length - 1];
+                // Only include if the immediately preceding message is an assistant with tool_calls
+                if (prev?.role === 'assistant' && prev?.tool_calls?.length) {
+                    sanitized.push(msg);
+                } else {
+                    console.warn('[Router] Dropping orphaned tool message from history:', msg.tool_call_id);
+                }
+            } else {
+                sanitized.push(msg);
+            }
+        }
+        return sanitized;
+    }
+
+    _toGeminiMessages(messages) {
+        const result = [];
+        for (const msg of messages) {
+            if (msg.role === 'user') {
+                result.push({ role: 'user', parts: [{ text: msg.content || '' }] });
+            } else if (msg.role === 'assistant') {
+                const parts = [];
+                if (msg.content) parts.push({ text: msg.content });
+                if (msg.toolCalls?.length) {
+                    msg.toolCalls.forEach(tc => {
+                        parts.push({ functionCall: { name: tc.name, args: tc.args } });
+                    });
+                }
+                result.push({ role: 'model', parts });
+            } else if (msg.role === 'tool') {
                 result.push({
                     role: 'user',
-                    content: [{ type: 'tool_result', tool_use_id: msg.toolCallId, content: msg.content }]
+                    parts: [{
+                        functionResponse: {
+                            name: msg.toolName,
+                            response: { result: msg.content }
+                        }
+                    }]
                 });
             }
         }
         return result;
     }
 
-    _toOpenAIMessages(messages) {
-        return messages.map(msg => {
-            if (msg.role === 'tool') {
-                return { role: 'tool', tool_call_id: msg.toolCallId, content: msg.content };
+    _formatOpenAIContent(text, sharedContext) {
+        if (!sharedContext?.screenshot || (Date.now() - sharedContext.timestamp > 300000)) {
+            return text;
+        }
+
+        const base64Image = sharedContext.screenshot.replace(/^data:image\/(png|jpeg);base64,/, "");
+        return [
+            { type: "text", text: text || "Describe what you see on my screen." },
+            {
+                type: "image_url",
+                image_url: {
+                    url: `data:image/png;base64,${base64Image}`,
+                    detail: "high"
+                }
             }
-            if (msg.toolCalls?.length) {
-                return {
-                    role: 'assistant',
-                    content: null,
-                    tool_calls: msg.toolCalls.map(tc => ({
-                        id: tc.id, type: 'function',
-                        function: { name: tc.name, arguments: JSON.stringify(tc.args) }
-                    }))
-                };
-            }
-            return { role: msg.role === 'assistant' ? 'assistant' : 'user', content: msg.content || '' };
-        });
+        ];
     }
 
-    _toGeminiMessages(messages) {
-        const result = [];
-        for (const msg of messages) {
-            if (msg.role === 'user' && !msg.toolCallId) {
-                result.push({ role: 'user', parts: [{ text: msg.content || '' }] });
-            } else if (msg.role === 'assistant' && !msg.toolCalls?.length) {
-                result.push({ role: 'model', parts: [{ text: msg.content || '' }] });
-            }
+    _formatAnthropicContent(text, sharedContext) {
+        if (!sharedContext?.screenshot || (Date.now() - sharedContext.timestamp > 300000)) {
+            return text;
         }
-        return result;
+
+        const base64Image = sharedContext.screenshot.replace(/^data:image\/(png|jpeg);base64,/, "");
+        return [
+            {
+                type: "image",
+                source: {
+                    type: "base64",
+                    media_type: "image/png",
+                    data: base64Image
+                }
+            },
+            { type: "text", text: text || "Describe what you see on my screen." }
+        ];
     }
 
     async classifyInteractionType(text) {

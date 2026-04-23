@@ -97,10 +97,9 @@ const ActivityTicker = () => {
     if (!hasContent) return null;
 
     return (
-        <div className="absolute bottom-[72px] left-0 right-0 flex justify-center px-4 pointer-events-none z-40">
-            <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-0.5"
-                style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-            >
+        <div className="flex items-center gap-2 overflow-x-auto max-w-full py-1.5 px-4 no-scrollbar"
+            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        >
                 <AnimatePresence mode="popLayout">
                     {visible.map(a => (
                         <Pill key={a.id} id={a.id} name={a.name} status={a.status} />
@@ -108,7 +107,6 @@ const ActivityTicker = () => {
                     {isCompacting && <CompactingPill key="compacting" />}
                 </AnimatePresence>
             </div>
-        </div>
     );
 };
 

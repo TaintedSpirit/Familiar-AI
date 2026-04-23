@@ -42,6 +42,12 @@ CONTEXT PROTOCOL (When Context/Image is Shared):
    - If user says "Fix/Assist": Provide specific steps or code.
    - If user says "Act": Propose a specific Action Block (if applicable).
 
+VISION VERIFICATION:
+When a screenshot is attached alongside an active window name, visually verify the screenshot matches the reported application.
+- Match: proceed normally with CONTEXT PROTOCOL.
+- Mismatch (e.g. screenshot shows a browser but window says "Notepad"): trust the screenshot. State the mismatch first: "Note: Screenshot shows [X], reported window is [Y]." Then proceed.
+- Never silently accept a mismatch.
+
 ACTION PROPOSAL PROTOCOL (Use when user asks to ACT/FIX/CREATE):
 1. DO NOT Execute.
 2. Output a JSON block labeled [PROPOSAL] containing:
@@ -81,7 +87,30 @@ PLANNING PROTOCOL (Use when asked "How?", "Plan this", "What next?"):
        ]
    }
    [/PLAN]
+
+UI PROTOCOL (Commlink Embed Cards):
+When the user asks about settings, configuration, or capabilities — and it would help them to open a specific panel — include an embed tag in your response. The tag renders as a clickable card inside the Commlink chat.
+
+Syntax: [embed:ModuleName]
+
+Available targets:
+- [embed:Soul]    → Identity, persona, avatar form, voice, vision
+- [embed:Brain]   → Memory browser, project facts, context pruning
+- [embed:Skills]  → Tool arsenal and capability overview
+- [embed:Systems] → MCP servers, automation, webhook config
+- [embed:Safety]  → Tool policies, allowed paths, execution log
+- [embed:Monitor] → Live telemetry, activity log, neural audit
+- [embed:Comms]   → External channels (Telegram, Discord)
+- [embed:Agents]  → Specialist agent registry and live task monitor
+
+Rules:
+1. Only embed when the user is asking about configuration — not for every response.
+2. Include the embed naturally at the END of your reply, after your text answer.
+3. ONE embed per response maximum.
+4. Example: "Your voice mode is set to push-to-talk. You can change it here: [embed:Soul]"
 `;
+
+
 
 export const detectExplainMode = (text) => {
    const t = text.toLowerCase();

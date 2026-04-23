@@ -23,7 +23,9 @@ async function register({ userDataDir, getActiveWindow, projectRoot }) {
     service = new MemoryService({ userDataDir });
 
     const initial = await service.initialScan();
-    console.log(`[MemoryIpc] Initial scan: indexed=${initial.indexed}, removed=${initial.removed}`);
+    try {
+        console.log(`[MemoryIpc] Initial scan: indexed=${initial.indexed}, removed=${initial.removed}`);
+    } catch (_) { }
 
     service.on('changed', payload => broadcast(getActiveWindow, payload));
 
@@ -52,7 +54,9 @@ async function register({ userDataDir, getActiveWindow, projectRoot }) {
         await projectMemory.initialScan();
         projectMemory.startWatcher();
         projectMemory.on('changed', payload => broadcast(getActiveWindow, { ...payload, source: 'projectMemory' }));
-        console.log(`[MemoryIpc] Project memory ready at ${projectRoot}`);
+        try {
+            console.log(`[MemoryIpc] Project memory ready at ${projectRoot}`);
+        } catch (_) { }
 
         ipcMain.handle('projectMemory:search', async (_e, args) => projectMemory.search(args || {}));
         ipcMain.handle('projectMemory:searchHybrid', async (_e, args) => projectMemory.searchHybrid(args || {}));

@@ -354,10 +354,73 @@ app.whenReady().then(async () => {
 
     ipcMain.handle('capture-context-snapshot', async () => {
         try {
-            const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1280, height: 720 } });
-            return sources[0].thumbnail.toDataURL();
-        } catch (e) { return null; }
+            // 1. Hide ALL windows
+            const allWindows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed() && w.isVisible());
+            allWindows.forEach(w => w.hide());
+
+            // 2. Focus Verification Loop
+            // We wait until the OS stops reporting "ai-familiar" as the foreground app.
+            let metadata = { app: 'Unknown', title: 'Unknown', url: null };
+            let aw = null;
+            
+            for (let i = 0; i < 5; i++) {
+                try {
+                    aw = await activeWindow();
+                    const appName = aw?.owner?.name?.toLowerCase() || '';
+                    // If it's not us or an empty state, we found the target!
+                    if (aw && !appName.includes('ai-familiar') && !appName.includes('electron')) {
+                        metadata = {
+                            app: aw.owner.name,
+                            title: aw.title,
+                            url: aw.url || null,
+                            bounds: aw.bounds
+                        };
+                        console.log(`[Main] Found target window after ${i * 100}ms: ${metadata.app}`);
+                        break;
+                    }
+                } catch (err) { }
+                await new Promise(r => setTimeout(r, 100)); // Polling interval
+            }
+
+            // 3. Capture the actual screenshot now that we are sure the focus has shifted
+            const sourcesResult = await Promise.allSettled([
+                desktopCapturer.getSources({ 
+                    types: ['screen'], 
+                    thumbnailSize: { width: 1280, height: 720 },
+                    fetchWindowIcons: false 
+                })
+            ]);
+
+            // 4. Restore ALL windows
+            allWindows.forEach(w => w.show());
+
+            const sources = sourcesResult[0].status === 'fulfilled' ? sourcesResult[0].value : null;
+            if (!sources || sources.length === 0) {
+                console.warn('[Main] desktopCapturer returned no sources');
+                return null;
+            }
+
+            const thumbnail = sources[0].thumbnail;
+            if (!thumbnail || thumbnail.isEmpty()) {
+                console.warn('[Main] desktopCapturer thumbnail is empty');
+                return null;
+            }
+
+            const screenshot = thumbnail.toDataURL();
+            console.log(`[Main] Capture Success: "${metadata.title}" (${metadata.app})`);
+            
+            return { screenshot, metadata };
+        } catch (e) {
+            console.error('[Main] capture-context-snapshot error:', e);
+            // Emergency restore
+            BrowserWindow.getAllWindows().forEach(w => {
+                if (!w.isDestroyed()) w.show();
+            });
+            return null;
+        }
     });
+
+    ipcMain.handle('get-cursor-position', () => screen.getCursorScreenPoint());
 
     ipcMain.on('set-always-on-top', (_event, shouldBeOnTop) => {
         [companionWindow, commandBarWindow].forEach(win => {
