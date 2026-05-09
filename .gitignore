@@ -37,3 +37,6 @@ memory.db-wal
 
 # Electron build artifacts
 out/
+
+# Reference-only vendor directories
+hermes-agent-reference/
