@@ -1,11 +1,55 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { X, Settings, Cpu, Mic, Eye, History, Zap, Keyboard, User, Image as ImageIcon, Bot, Plug, Hash, Shield, Clock, Radio, LayoutDashboard, Activity, Box, Database, Server } from 'lucide-react';
+import { X, Settings, Cpu, Mic, Eye, History, Zap, Keyboard, User, Image as ImageIcon, Bot, Plug, Hash, Shield, Clock, Radio, LayoutDashboard, Activity, Box, Database, Server, Code2, ChevronDown } from 'lucide-react';
 import { cronEngine } from '../../services/watchers/CronEngine';
 import { useSettingsStore } from '../../services/settings/SettingsStore';
+import { useMemoryStore } from '../../services/memory/MemoryStore';
 import { useSpeechStore } from '../../services/voice/SpeechStore';
+import { useTelemetryStore } from '../../services/telemetry/TelemetryStore';
 import { audioGraph } from '../../services/voice/AudioGraph';
 import { getKeyLabel } from '../../utils/keymap';
+
+const CustomSelect = ({ value, onChange, options, className = '' }) => {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+
+    useEffect(() => {
+        if (!open) return;
+        const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+        document.addEventListener('mousedown', close);
+        return () => document.removeEventListener('mousedown', close);
+    }, [open]);
+
+    const label = options.find(o => o.value === value)?.label ?? value;
+
+    return (
+        <div ref={ref} className="relative w-full">
+            <button
+                type="button"
+                onClick={() => setOpen(o => !o)}
+                className={`w-full flex items-center justify-between ${className}`}
+            >
+                <span className="truncate">{label}</span>
+                <ChevronDown size={14} className={`shrink-0 ml-2 text-white/40 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+            </button>
+            {open && (
+                <ul className="absolute z-[300] w-full mt-1 bg-[#111] border border-white/15 rounded-lg overflow-hidden shadow-2xl">
+                    {options.map(o => (
+                        <li key={o.value}>
+                            <button
+                                type="button"
+                                onClick={() => { onChange(o.value); setOpen(false); }}
+                                className={`w-full text-left px-4 py-2.5 text-sm transition-colors ${o.value === value ? 'bg-white/10 text-white' : 'text-white/70 hover:bg-white/5 hover:text-white'}`}
+                            >
+                                {o.label}
+                            </button>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+};
 
 const SettingsHUD = ({ onClose, discordConnected = false }) => {
     const {
@@ -27,6 +71,7 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
         disableAotOnDrag, setDisableAotOnDrag,
         useOpaqueDrag, setUseOpaqueDrag,
         useIpcDrag, setUseIpcDrag,
+        windowMode, setWindowMode,
         hotkeys, setHotkey,
 
         // Secondary
@@ -45,6 +90,8 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
         dockerEnabled, setDockerEnabled,
         toolPolicies, setToolPolicy,
         allowedWritePaths, setAllowedWritePaths,
+        hooksEnabled, setHooksEnabled,
+        hooksAllowlist, approveHook, denyHook,
 
         // Automation
         webhookEnabled, setWebhookEnabled,
@@ -76,6 +123,29 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
 
     const [devices, setDevices] = useState([]);
 
+    // History tab state (hoisted — hooks must be top-level, not nested in render fns)
+    const historyProjects = useMemoryStore(s => s.projects);
+    const historyActiveProjectId = useMemoryStore(s => s.activeProjectId);
+
+    // Coder tab state
+    const claudeCodePath = useSettingsStore(s => s.claudeCodePath);
+    const setClaudeCodePath = useSettingsStore(s => s.setClaudeCodePath);
+    const claudeCodeCwd = useSettingsStore(s => s.claudeCodeCwd);
+    const setClaudeCodeCwd = useSettingsStore(s => s.setClaudeCodeCwd);
+    const claudeCodePermissionMode = useSettingsStore(s => s.claudeCodePermissionMode);
+    const setClaudeCodePermissionMode = useSettingsStore(s => s.setClaudeCodePermissionMode);
+    const [coderTestStatus, setCoderTestStatus] = useState(null);
+    const [coderTestOutput, setCoderTestOutput] = useState('');
+
+    const codexPath = useSettingsStore(s => s.codexPath);
+    const setCodexPath = useSettingsStore(s => s.setCodexPath);
+    const codexCwd = useSettingsStore(s => s.codexCwd);
+    const setCodexCwd = useSettingsStore(s => s.setCodexCwd);
+    const codexApprovalMode = useSettingsStore(s => s.codexApprovalMode);
+    const setCodexApprovalMode = useSettingsStore(s => s.setCodexApprovalMode);
+    const [codexTestStatus, setCodexTestStatus] = useState(null);
+    const [codexTestOutput, setCodexTestOutput] = useState('');
+
     useEffect(() => {
         // Load Devices
         navigator.mediaDevices.enumerateDevices().then(devs => {
@@ -91,6 +161,8 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
         { id: 'Voice', label: 'Voice', icon: Mic },
         { id: 'Vision', label: 'Vision', icon: Eye },
         { id: 'History', label: 'History', icon: History },
+        { id: 'Insights', label: 'Insights', icon: Activity },
+        { id: 'Coder', label: 'Coder', icon: Code2 },
         { id: 'Streaming', label: 'Streaming', icon: Zap },
         { id: 'Hotkeys', label: 'Hotkeys', icon: Keyboard },
 
@@ -105,26 +177,24 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
         <div className="space-y-6">
             <div className="space-y-2">
                 <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">AI Provider</label>
-                <div className="relative">
-                    <select
-                        value={aiProvider}
-                        onChange={(e) => {
-                            setAiProvider(e.target.value);
-                            // Reset model default when provider changes
-                            if (e.target.value === 'openai') setModel('gpt-4o');
-                            else if (e.target.value === 'gemini') setModel('gemini-pro');
-                            else if (e.target.value === 'anthropic') setModel('claude-3-sonnet-20240229');
-                            else setModel('mistral-7b');
-                        }}
-                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white appearance-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors"
-                    >
-                        <option value="gemini">Google Gemini (Cloud)</option>
-                        <option value="openai">OpenAI (Cloud)</option>
-                        <option value="anthropic">Anthropic (Claude)</option>
-                        <option value="ollama">Ollama (Local)</option>
-                        <option value="lm-studio">LM Studio (Local)</option>
-                    </select>
-                </div>
+                <CustomSelect
+                    value={aiProvider}
+                    onChange={(v) => {
+                        setAiProvider(v);
+                        if (v === 'openai') setModel('gpt-4o');
+                        else if (v === 'gemini') setModel('gemini-pro');
+                        else if (v === 'anthropic') setModel('claude-3-sonnet-20240229');
+                        else setModel('mistral-7b');
+                    }}
+                    options={[
+                        { value: 'gemini', label: 'Google Gemini (Cloud)' },
+                        { value: 'openai', label: 'OpenAI (Cloud)' },
+                        { value: 'anthropic', label: 'Anthropic (Claude)' },
+                        { value: 'ollama', label: 'Ollama (Local)' },
+                        { value: 'lm-studio', label: 'LM Studio (Local)' },
+                    ]}
+                    className="bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-purple-500 transition-colors"
+                />
                 <p className="text-xs text-white/30">Choose the AI engine to use for response generation.</p>
             </div>
 
@@ -172,42 +242,30 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
 
             <div className="space-y-2">
                 <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Model</label>
-                <div className="relative">
-                    <select
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white appearance-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors"
-                    >
-                        {aiProvider === 'gemini' && (
-                            <>
-                                <option value="gemini-pro">gemini-pro (Standard)</option>
-                                <option value="gemini-1.5-flash">gemini-1.5-flash (Fast)</option>
-                            </>
-                        )}
-                        {aiProvider === 'openai' && (
-                            <>
-                                <option value="gpt-4o">gpt-4o (Latest)</option>
-                                <option value="gpt-4-turbo">gpt-4-turbo</option>
-                                <option value="gpt-3.5-turbo">gpt-3.5-turbo (Fast)</option>
-                                <option value="gpt-5.2">gpt-5.2 (Preview)</option>
-                            </>
-                        )}
-                        {aiProvider === 'anthropic' && (
-                            <>
-                                <option value="claude-3-opus-20240229">Claude 3 Opus (Most Powerful)</option>
-                                <option value="claude-3-sonnet-20240229">Claude 3 Sonnet (Balanced)</option>
-                                <option value="claude-3-haiku-20240307">Claude 3 Haiku (Fast)</option>
-                            </>
-                        )}
-                        {(aiProvider === 'ollama' || aiProvider === 'lm-studio') && (
-                            <>
-                                <option value="mistral-7b">mistral-7b (General)</option>
-                                <option value="llama-3.1-8b">llama-3.1-8b (Censored/Uncensored)</option>
-                                <option value="deepseek-coder">deepseek-coder (Coding)</option>
-                            </>
-                        )}
-                    </select>
-                </div>
+                <CustomSelect
+                    value={model}
+                    onChange={(v) => setModel(v)}
+                    options={
+                        aiProvider === 'gemini' ? [
+                            { value: 'gemini-pro', label: 'gemini-pro (Standard)' },
+                            { value: 'gemini-1.5-flash', label: 'gemini-1.5-flash (Fast)' },
+                        ] : aiProvider === 'openai' ? [
+                            { value: 'gpt-4o', label: 'gpt-4o (Latest)' },
+                            { value: 'gpt-4-turbo', label: 'gpt-4-turbo' },
+                            { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo (Fast)' },
+                            { value: 'gpt-5.2', label: 'gpt-5.2 (Preview)' },
+                        ] : aiProvider === 'anthropic' ? [
+                            { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus (Most Powerful)' },
+                            { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet (Balanced)' },
+                            { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Fast)' },
+                        ] : [
+                            { value: 'mistral-7b', label: 'mistral-7b (General)' },
+                            { value: 'llama-3.1-8b', label: 'llama-3.1-8b (Censored/Uncensored)' },
+                            { value: 'deepseek-coder', label: 'deepseek-coder (Coding)' },
+                        ]
+                    }
+                    className="bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-purple-500 transition-colors"
+                />
                 <p className="text-xs text-white/30">Select an available model for the active provider.</p>
             </div>
 
@@ -215,66 +273,52 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
             <div className="pt-6 border-t border-white/5 space-y-6">
                 <div className="space-y-2">
                     <label className="text-xs font-semibold text-blue-400/80 tracking-wider uppercase">Secondary Provider (Fallback)</label>
-                    <div className="relative">
-                        <select
-                            value={secondaryAiProvider}
-                            onChange={(e) => {
-                                setSecondaryAiProvider(e.target.value);
-                                // Reset model default when provider changes
-                                if (e.target.value === 'openai') setSecondaryModel('gpt-3.5-turbo');
-                                else if (e.target.value === 'gemini') setSecondaryModel('gemini-1.5-flash');
-                                else if (e.target.value === 'anthropic') setSecondaryModel('claude-3-haiku-20240307');
-                                else setSecondaryModel('mistral-7b');
-                            }}
-                            className="w-full bg-[#1a1a1a] border border-blue-500/20 rounded-lg px-4 py-3 text-white appearance-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                        >
-                            <option value="none">None</option>
-                            <option value="gemini">Google Gemini (Cloud)</option>
-                            <option value="openai">OpenAI (Cloud)</option>
-                            <option value="anthropic">Anthropic (Claude)</option>
-                            <option value="ollama">Ollama (Local)</option>
-                            <option value="lm-studio">LM Studio (Local)</option>
-                        </select>
-                    </div>
+                    <CustomSelect
+                        value={secondaryAiProvider}
+                        onChange={(v) => {
+                            setSecondaryAiProvider(v);
+                            if (v === 'openai') setSecondaryModel('gpt-3.5-turbo');
+                            else if (v === 'gemini') setSecondaryModel('gemini-1.5-flash');
+                            else if (v === 'anthropic') setSecondaryModel('claude-3-haiku-20240307');
+                            else setSecondaryModel('mistral-7b');
+                        }}
+                        options={[
+                            { value: 'none', label: 'None' },
+                            { value: 'gemini', label: 'Google Gemini (Cloud)' },
+                            { value: 'openai', label: 'OpenAI (Cloud)' },
+                            { value: 'anthropic', label: 'Anthropic (Claude)' },
+                            { value: 'ollama', label: 'Ollama (Local)' },
+                            { value: 'lm-studio', label: 'LM Studio (Local)' },
+                        ]}
+                        className="bg-[#1a1a1a] border border-blue-500/20 rounded-lg px-4 py-3 text-white focus:border-blue-500 transition-colors"
+                    />
                 </div>
 
                 {secondaryAiProvider !== 'none' && (
                     <div className="space-y-2">
                         <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Secondary Model</label>
-                        <div className="relative">
-                            <select
-                                value={secondaryModel}
-                                onChange={(e) => setSecondaryModel(e.target.value)}
-                                className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white appearance-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
-                            >
-                                {secondaryAiProvider === 'gemini' && (
-                                    <>
-                                        <option value="gemini-pro">gemini-pro (Standard)</option>
-                                        <option value="gemini-1.5-flash">gemini-1.5-flash (Fast)</option>
-                                    </>
-                                )}
-                                {secondaryAiProvider === 'openai' && (
-                                    <>
-                                        <option value="gpt-4o">gpt-4o (Latest)</option>
-                                        <option value="gpt-4-turbo">gpt-4-turbo</option>
-                                        <option value="gpt-3.5-turbo">gpt-3.5-turbo (Fast)</option>
-                                    </>
-                                )}
-                                {secondaryAiProvider === 'anthropic' && (
-                                    <>
-                                        <option value="claude-3-opus-20240229">Claude 3 Opus (Most Powerful)</option>
-                                        <option value="claude-3-sonnet-20240229">Claude 3 Sonnet (Balanced)</option>
-                                        <option value="claude-3-haiku-20240307">Claude 3 Haiku (Fast)</option>
-                                    </>
-                                )}
-                                {(secondaryAiProvider === 'ollama' || secondaryAiProvider === 'lm-studio') && (
-                                    <>
-                                        <option value="mistral-7b">mistral-7b (General)</option>
-                                        <option value="llama-3.1-8b">llama-3.1-8b (Censored/Uncensored)</option>
-                                    </>
-                                )}
-                            </select>
-                        </div>
+                        <CustomSelect
+                            value={secondaryModel}
+                            onChange={(v) => setSecondaryModel(v)}
+                            options={
+                                secondaryAiProvider === 'gemini' ? [
+                                    { value: 'gemini-pro', label: 'gemini-pro (Standard)' },
+                                    { value: 'gemini-1.5-flash', label: 'gemini-1.5-flash (Fast)' },
+                                ] : secondaryAiProvider === 'openai' ? [
+                                    { value: 'gpt-4o', label: 'gpt-4o (Latest)' },
+                                    { value: 'gpt-4-turbo', label: 'gpt-4-turbo' },
+                                    { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo (Fast)' },
+                                ] : secondaryAiProvider === 'anthropic' ? [
+                                    { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus (Most Powerful)' },
+                                    { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet (Balanced)' },
+                                    { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Fast)' },
+                                ] : [
+                                    { value: 'mistral-7b', label: 'mistral-7b (General)' },
+                                    { value: 'llama-3.1-8b', label: 'llama-3.1-8b (Censored/Uncensored)' },
+                                ]
+                            }
+                            className="bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-blue-500 transition-colors"
+                        />
                     </div>
                 )}
             </div>
@@ -406,16 +450,15 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
             <div className="space-y-4">
                 <div className="space-y-2">
                     <label className="text-xs font-semibold text-white/60 uppercase">Input Device</label>
-                    <select
+                    <CustomSelect
                         value={inputDeviceId}
-                        onChange={(e) => setInputDeviceId(e.target.value)}
-                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white appearance-none"
-                    >
-                        <option value="default">Default System Device</option>
-                        {devices.map(d => (
-                            <option key={d.deviceId} value={d.deviceId}>{d.label || `Device ${d.deviceId.slice(0, 5)}...`}</option>
-                        ))}
-                    </select>
+                        onChange={(v) => setInputDeviceId(v)}
+                        options={[
+                            { value: 'default', label: 'Default System Device' },
+                            ...devices.map(d => ({ value: d.deviceId, label: d.label || `Device ${d.deviceId.slice(0, 5)}...` })),
+                        ]}
+                        className="bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white"
+                    />
                 </div>
 
                 <div className="space-y-2">
@@ -440,32 +483,32 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
 
                 <div className="space-y-2">
                     <label className="text-xs font-semibold text-white/60 uppercase">Speech Provider</label>
-                    <select
+                    <CustomSelect
                         value={speechProvider}
-                        onChange={(e) => setSpeechProvider(e.target.value)}
-                        className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white appearance-none"
-                    >
-                        <option value="gemini">Google Gemini (Multimodal)</option>
-                        <option value="openai">OpenAI Whisper/TTS</option>
-                    </select>
+                        onChange={(v) => setSpeechProvider(v)}
+                        options={[
+                            { value: 'gemini', label: 'Google Gemini (Multimodal)' },
+                            { value: 'openai', label: 'OpenAI Whisper/TTS' },
+                        ]}
+                        className="bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white"
+                    />
                 </div>
 
                 <div className="space-y-2">
                     <label className="text-xs font-semibold text-white/60 uppercase">Companion Voice</label>
-                    <div className="relative">
-                        <select
-                            value={useSpeechStore.getState().voiceId}
-                            onChange={(e) => useSpeechStore.getState().setVoiceId(e.target.value)}
-                            className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white appearance-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
-                        >
-                            <option value="alloy">Alloy (Neutral)</option>
-                            <option value="echo">Echo (Male)</option>
-                            <option value="fable">Fable (British)</option>
-                            <option value="onyx">Onyx (Deep Male)</option>
-                            <option value="nova">Nova (Female)</option>
-                            <option value="shimmer">Shimmer (Female)</option>
-                        </select>
-                    </div>
+                    <CustomSelect
+                        value={useSpeechStore.getState().voiceId}
+                        onChange={(v) => useSpeechStore.getState().setVoiceId(v)}
+                        options={[
+                            { value: 'alloy', label: 'Alloy (Neutral)' },
+                            { value: 'echo', label: 'Echo (Male)' },
+                            { value: 'fable', label: 'Fable (British)' },
+                            { value: 'onyx', label: 'Onyx (Deep Male)' },
+                            { value: 'nova', label: 'Nova (Female)' },
+                            { value: 'shimmer', label: 'Shimmer (Female)' },
+                        ]}
+                        className="bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-purple-500"
+                    />
                     <p className="text-xs text-white/30">Select the vocal personality.</p>
                 </div>
             </div>
@@ -780,6 +823,32 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                         />
                     </div>
 
+                    {/* Window Rendering Mode */}
+                    <div className="space-y-4 border-t border-white/5 pt-4">
+                        <div className="space-y-2">
+                            <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Window Rendering Mode</label>
+                            <CustomSelect
+                                value={windowMode}
+                                onChange={(v) => {
+                                    setWindowMode(v);
+                                    if (window.electronAPI && window.electronAPI.setWindowMode) {
+                                        window.electronAPI.setWindowMode(v);
+                                    }
+                                }}
+                                options={[
+                                    { value: 'overlay', label: 'Full Screen Overlay (Smooth Web Physics)' },
+                                    { value: 'compact', label: 'Compact Window (High Performance, Multi-Monitor Drag)' },
+                                ]}
+                                className="bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-cyan-500 transition-colors"
+                            />
+                            <p className="text-xs text-white/40">
+                                {windowMode === 'overlay' 
+                                    ? "Companion lives in a massive transparent overlay. Best for smooth physics and bouncing off screen edges." 
+                                    : "Companion lives in a tiny box. Best for PC performance and dragging seamlessly between multiple monitors."}
+                            </p>
+                        </div>
+                    </div>
+
                     {/* Window & Dragging */}
                     <div className="space-y-4 border-t border-white/5 pt-4">
                         <h4 className="text-xs font-semibold text-white/60 tracking-wider uppercase mb-2">Window Performance</h4>
@@ -825,18 +894,254 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
         </div>
     );
 
-    const renderHistoryContent = () => (
-        <div className="flex flex-col items-center justify-center h-64 text-center space-y-4">
-            <History className="w-12 h-12 text-white/10" />
-            <div>
-                <h3 className="text-lg font-medium text-white">Conversation History</h3>
-                <p className="text-sm text-white/40">View and manage past interactions.</p>
+    const renderHistoryContent = () => {
+        const projects = historyProjects;
+        const activeProjectId = historyActiveProjectId;
+        const activeProject = projects.find(p => p.id === activeProjectId);
+        const activeMsgCount = activeProject?.messages?.length ?? 0;
+        const totalMsgCount = projects.reduce((n, p) => n + (p.messages?.length ?? 0), 0);
+
+        const clearActive = () => {
+            if (window.confirm(`Delete all ${activeMsgCount} messages in "${activeProject?.name}"? This cannot be undone.`)) {
+                useMemoryStore.getState().clearMessages();
+            }
+        };
+
+        const clearAll = () => {
+            if (!window.confirm(`Delete ALL ${totalMsgCount} messages across every project? This cannot be undone.`)) return;
+            useMemoryStore.setState(state => ({
+                projects: state.projects.map(p => ({ ...p, messages: [] }))
+            }));
+        };
+
+        return (
+            <div className="flex flex-col items-center justify-center min-h-64 text-center space-y-4 py-8">
+                <History className="w-12 h-12 text-white/10" />
+                <div>
+                    <h3 className="text-lg font-medium text-white">Conversation History</h3>
+                    <p className="text-sm text-white/40">
+                        {totalMsgCount} message{totalMsgCount === 1 ? '' : 's'} stored across {projects.length} project{projects.length === 1 ? '' : 's'}.
+                    </p>
+                    <p className="text-xs text-white/30 mt-1">
+                        Past chats persist across restarts and inform the familiar's responses.
+                    </p>
+                </div>
+                <div className="flex flex-col gap-2 w-full max-w-xs">
+                    <button
+                        onClick={clearActive}
+                        disabled={activeMsgCount === 0}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-xs text-white/70 transition-colors"
+                    >
+                        Clear Active Project ({activeMsgCount})
+                    </button>
+                    <button
+                        onClick={clearAll}
+                        disabled={totalMsgCount === 0}
+                        className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-xs text-red-300 transition-colors"
+                    >
+                        Clear All Conversations ({totalMsgCount})
+                    </button>
+                </div>
             </div>
-            <button className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-xs text-white/60 transition-colors">
-                Clear Local Cache
-            </button>
-        </div>
-    );
+        );
+    };
+
+    const runCoderTest = async () => {
+        setCoderTestStatus('running');
+        setCoderTestOutput('');
+        try {
+            const { ClaudeCodeRunner } = await import('../../services/agent/ClaudeCodeRunner');
+            const runner = new ClaudeCodeRunner();
+            const result = await runner.run('Say the single word "ready" and stop.', {
+                binPath: claudeCodePath || 'claude',
+                cwd: claudeCodeCwd || undefined,
+                permissionMode: 'default',
+            });
+            if (result.error) {
+                setCoderTestStatus('error');
+                setCoderTestOutput(result.error);
+            } else if (result.code !== 0) {
+                setCoderTestStatus('error');
+                setCoderTestOutput(`Exit ${result.code}\n${result.stderr || result.stdout}`);
+            } else {
+                setCoderTestStatus('ok');
+                setCoderTestOutput(result.stdout.trim() || '(empty)');
+            }
+        } catch (e) {
+            setCoderTestStatus('error');
+            setCoderTestOutput(e.message);
+        }
+    };
+
+    const runCodexTest = async () => {
+        setCodexTestStatus('running');
+        setCodexTestOutput('');
+        try {
+            const { CodexRunner } = await import('../../services/agent/CodexRunner');
+            const runner = new CodexRunner();
+            const result = await runner.run('Print the single word "ready" and stop.', {
+                binPath: codexPath || 'codex',
+                cwd: codexCwd || undefined,
+                approvalMode: 'full-auto',
+            });
+            if (result.error) {
+                setCodexTestStatus('error');
+                setCodexTestOutput(result.error);
+            } else if (result.code !== 0) {
+                setCodexTestStatus('error');
+                setCodexTestOutput(`Exit ${result.code}\n${result.stderr || result.stdout}`);
+            } else {
+                setCodexTestStatus('ok');
+                setCodexTestOutput(result.stdout.trim() || '(empty)');
+            }
+        } catch (e) {
+            setCodexTestStatus('error');
+            setCodexTestOutput(e.message);
+        }
+    };
+
+    const renderCoderContent = () => {
+        const testStatus = coderTestStatus;
+        const testOutput = coderTestOutput;
+        const runTest = runCoderTest;
+
+        return (
+            <div className="space-y-6">
+                <div>
+                    <h3 className="text-lg font-medium text-white">Claude Code CLI</h3>
+                    <p className="text-sm text-white/40 mt-1">
+                        Wires the local <code className="text-white/60">claude</code> CLI as a Pack member. The familiar can delegate real coding work via the <code className="text-white/60">run_claude_code</code> tool.
+                    </p>
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Binary Path</label>
+                    <input
+                        type="text"
+                        value={claudeCodePath || ''}
+                        onChange={(e) => setClaudeCodePath(e.target.value)}
+                        placeholder="claude"
+                        className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-sm focus:outline-none focus:border-white/20 font-mono"
+                    />
+                    <p className="text-[11px] text-white/30">
+                        Bare <code>claude</code> uses your PATH. Use a full path if the CLI lives elsewhere.
+                    </p>
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Default Working Directory</label>
+                    <input
+                        type="text"
+                        value={claudeCodeCwd || ''}
+                        onChange={(e) => setClaudeCodeCwd(e.target.value)}
+                        placeholder="(current directory)"
+                        className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-sm focus:outline-none focus:border-white/20 font-mono"
+                    />
+                    <p className="text-[11px] text-white/30">
+                        Where Claude Code runs and edits files. Leave blank to use the app's cwd.
+                    </p>
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Permission Mode</label>
+                    <CustomSelect
+                        value={claudeCodePermissionMode || 'acceptEdits'}
+                        onChange={(v) => setClaudeCodePermissionMode(v)}
+                        options={[
+                            { value: 'default', label: 'default — ask before edits' },
+                            { value: 'acceptEdits', label: 'acceptEdits — auto-approve file edits' },
+                            { value: 'plan', label: 'plan — read-only planning' },
+                            { value: 'bypassPermissions', label: 'bypassPermissions — full auto (use with care)' },
+                        ]}
+                        className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-sm"
+                    />
+                </div>
+
+                <div className="pt-2 space-y-2">
+                    <button
+                        onClick={runTest}
+                        disabled={testStatus === 'running'}
+                        className="px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 disabled:opacity-50 rounded-lg text-xs text-blue-200 border border-blue-500/30 transition-colors"
+                    >
+                        {testStatus === 'running' ? 'Testing…' : 'Test Connection'}
+                    </button>
+                    {testStatus && testStatus !== 'running' && (
+                        <pre className={`text-[11px] font-mono p-3 rounded-lg whitespace-pre-wrap break-all ${
+                            testStatus === 'ok' ? 'bg-green-500/10 text-green-200 border border-green-500/20'
+                                                : 'bg-red-500/10 text-red-200 border border-red-500/20'
+                        }`}>{testOutput}</pre>
+                    )}
+                </div>
+
+                <div className="border-t border-white/10 pt-6 space-y-6">
+                    <div>
+                        <h3 className="text-lg font-medium text-white">OpenAI Codex CLI</h3>
+                        <p className="text-sm text-white/40 mt-1">
+                            Wires the local <code className="text-white/60">codex</code> CLI as a Pack member. The familiar can delegate coding tasks via the <code className="text-white/60">run_codex</code> tool.
+                        </p>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Binary Path</label>
+                        <input
+                            type="text"
+                            value={codexPath || ''}
+                            onChange={(e) => setCodexPath(e.target.value)}
+                            placeholder="codex"
+                            className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-sm focus:outline-none focus:border-white/20 font-mono"
+                        />
+                        <p className="text-[11px] text-white/30">
+                            Bare <code>codex</code> uses your PATH. Use a full path if the CLI lives elsewhere.
+                        </p>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Default Working Directory</label>
+                        <input
+                            type="text"
+                            value={codexCwd || ''}
+                            onChange={(e) => setCodexCwd(e.target.value)}
+                            placeholder="(current directory)"
+                            className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-sm focus:outline-none focus:border-white/20 font-mono"
+                        />
+                        <p className="text-[11px] text-white/30">
+                            Where Codex runs and edits files. Leave blank to use the app's cwd.
+                        </p>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-white/60 tracking-wider uppercase">Approval Mode</label>
+                        <CustomSelect
+                            value={codexApprovalMode || 'auto-edit'}
+                            onChange={(v) => setCodexApprovalMode(v)}
+                            options={[
+                                { value: 'suggest', label: 'suggest — show diffs, ask before applying' },
+                                { value: 'auto-edit', label: 'auto-edit — auto-apply file edits' },
+                                { value: 'full-auto', label: 'full-auto — no prompts (use with care)' },
+                            ]}
+                            className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-sm"
+                        />
+                    </div>
+
+                    <div className="pt-2 space-y-2">
+                        <button
+                            onClick={runCodexTest}
+                            disabled={codexTestStatus === 'running'}
+                            className="px-4 py-2 bg-green-500/20 hover:bg-green-500/30 disabled:opacity-50 rounded-lg text-xs text-green-200 border border-green-500/30 transition-colors"
+                        >
+                            {codexTestStatus === 'running' ? 'Testing…' : 'Test Connection'}
+                        </button>
+                        {codexTestStatus && codexTestStatus !== 'running' && (
+                            <pre className={`text-[11px] font-mono p-3 rounded-lg whitespace-pre-wrap break-all ${
+                                codexTestStatus === 'ok' ? 'bg-green-500/10 text-green-200 border border-green-500/20'
+                                                        : 'bg-red-500/10 text-red-200 border border-red-500/20'
+                            }`}>{codexTestOutput}</pre>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    };
 
     const renderStreamingContent = () => (
         <div className="flex flex-col items-center justify-center h-64 text-center space-y-4">
@@ -991,15 +1296,16 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                         <p className="text-sm font-medium text-white">{label}</p>
                         <p className="text-[10px] text-white/40">{desc}</p>
                     </div>
-                    <select
+                    <CustomSelect
                         value={toolPolicies?.[tool] ?? 'ask'}
-                        onChange={(e) => setToolPolicy(tool, e.target.value)}
-                        className="bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-1.5 text-white text-xs focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-colors cursor-pointer"
-                    >
-                        <option value="allow">Always allow</option>
-                        <option value="ask">Ask each time</option>
-                        <option value="deny">Always deny</option>
-                    </select>
+                        onChange={(v) => setToolPolicy(tool, v)}
+                        options={[
+                            { value: 'allow', label: 'Always allow' },
+                            { value: 'ask', label: 'Ask each time' },
+                            { value: 'deny', label: 'Always deny' },
+                        ]}
+                        className="bg-[#1a1a1a] border border-white/10 rounded-lg px-3 py-1.5 text-white text-xs focus:border-orange-500 transition-colors"
+                    />
                 </div>
             ))}
 
@@ -1014,6 +1320,43 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                     placeholder="C:/Users/you/Projects&#10;C:/Users/you/Documents/notes"
                     className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white/80 font-mono text-xs focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-colors resize-none"
                 />
+            </div>
+
+            {/* Shell Hooks */}
+            <div className="space-y-3 pt-2 border-t border-white/5">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h3 className="text-sm font-semibold text-white">Shell Hooks</h3>
+                        <p className="text-[10px] text-white/40">JS scripts in .ai-familiar/hooks/ that intercept tool calls before execution.</p>
+                    </div>
+                    <button
+                        onClick={() => setHooksEnabled(!hooksEnabled)}
+                        className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer ${hooksEnabled ? 'bg-orange-500/70' : 'bg-white/10'}`}
+                    >
+                        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${hooksEnabled ? 'left-5' : 'left-0.5'}`} />
+                    </button>
+                </div>
+                {hooksEnabled && (
+                    <div className="space-y-2">
+                        <p className="text-[10px] text-white/30 font-mono bg-black/20 px-3 py-2 rounded-lg">
+                            Hooks dir: &lt;workspace&gt;/.ai-familiar/hooks/*.js
+                        </p>
+                        {(hooksAllowlist ?? []).length === 0 && (
+                            <p className="text-[10px] text-white/25">No hooks configured. Drop .js files in the hooks directory.</p>
+                        )}
+                        {(hooksAllowlist ?? []).map((h, i) => (
+                            <div key={i} className="flex items-center justify-between p-2 bg-white/5 rounded-lg border border-white/5">
+                                <span className="text-[10px] text-white/50 font-mono truncate max-w-[70%]">{h.hookPath.split(/[/\\]/).pop()}</span>
+                                <button
+                                    onClick={() => h.approved ? denyHook(h.hookPath) : approveHook(h.hookPath)}
+                                    className={`text-[9px] px-2 py-0.5 rounded-full font-mono ${h.approved ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}
+                                >
+                                    {h.approved ? 'approved' : 'denied'}
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -1208,6 +1551,118 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                             className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors placeholder-white/10 font-mono text-sm"
                         />
                         <p className="text-xs text-white/30">Only messages from this ID will be processed. Leave empty to accept anyone (not recommended).</p>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const renderInsightsContent = () => {
+        const { totalTokens, inputTokens, outputTokens, totalCostUSD, sessionStartedAt, sessionHistory, clearTelemetry } = useTelemetryStore();
+
+        // Per-provider cost breakdown
+        const providerBreakdown = sessionHistory.reduce((acc, s) => {
+            if (!acc[s.provider]) acc[s.provider] = { cost: 0, tokens: 0 };
+            acc[s.provider].cost += s.cost;
+            acc[s.provider].tokens += s.inputTokens + s.outputTokens;
+            return acc;
+        }, {});
+        const maxProviderCost = Math.max(...Object.values(providerBreakdown).map(p => p.cost), 0.0001);
+
+        // Top 5 models by cost
+        const modelBreakdown = sessionHistory.reduce((acc, s) => {
+            if (!acc[s.model]) acc[s.model] = 0;
+            acc[s.model] += s.cost;
+            return acc;
+        }, {});
+        const topModels = Object.entries(modelBreakdown)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5);
+
+        // Session cost rate
+        const sessionElapsedHrs = (Date.now() - (sessionStartedAt ?? Date.now())) / 3_600_000;
+        const costRate = sessionElapsedHrs > 0.001 ? totalCostUSD / sessionElapsedHrs : 0;
+
+        return (
+            <div className="space-y-6">
+                <div className="flex items-center justify-between mb-2">
+                    <h2 className="text-lg font-bold text-white tracking-wide">Usage & Costs</h2>
+                    <button onClick={clearTelemetry} className="text-xs text-red-400 hover:text-red-300 px-3 py-1 bg-red-500/10 rounded-lg">Clear Data</button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="p-5 bg-black/20 rounded-2xl border border-white/5">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Zap size={14} className="text-yellow-400" />
+                            <span className="text-xs text-white/50 uppercase tracking-wider font-semibold">Total Tokens</span>
+                        </div>
+                        <div className="text-3xl font-bold text-white mb-2">{totalTokens.toLocaleString()}</div>
+                        <div className="flex justify-between text-xs text-white/40">
+                            <span>In: {inputTokens.toLocaleString()}</span>
+                            <span>Out: {outputTokens.toLocaleString()}</span>
+                        </div>
+                    </div>
+
+                    <div className="p-5 bg-black/20 rounded-2xl border border-white/5">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Activity size={14} className="text-emerald-400" />
+                            <span className="text-xs text-white/50 uppercase tracking-wider font-semibold">Total Cost (USD)</span>
+                        </div>
+                        <div className="text-3xl font-bold text-emerald-400 mb-2">${totalCostUSD.toFixed(4)}</div>
+                        <div className="text-xs text-white/40">${costRate.toFixed(4)}/hr this session</div>
+                    </div>
+                </div>
+
+                {Object.keys(providerBreakdown).length > 0 && (
+                    <div className="space-y-2">
+                        <h3 className="text-xs text-white/50 uppercase tracking-wider font-semibold">By Provider</h3>
+                        {Object.entries(providerBreakdown).map(([provider, data]) => (
+                            <div key={provider} className="space-y-1">
+                                <div className="flex justify-between text-xs text-white/60">
+                                    <span className="capitalize font-mono">{provider}</span>
+                                    <span className="text-emerald-400">${data.cost.toFixed(4)}</span>
+                                </div>
+                                <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                    <div
+                                        className="h-full bg-emerald-500/50 rounded-full transition-all"
+                                        style={{ width: `${Math.min(100, (data.cost / maxProviderCost) * 100)}%` }}
+                                    />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {topModels.length > 0 && (
+                    <div className="space-y-2">
+                        <h3 className="text-xs text-white/50 uppercase tracking-wider font-semibold">Top Models by Cost</h3>
+                        {topModels.map(([model, cost]) => (
+                            <div key={model} className="flex justify-between items-center py-1 border-b border-white/5">
+                                <span className="text-[11px] text-white/50 font-mono truncate max-w-[70%]">{model}</span>
+                                <span className="text-[11px] text-emerald-400 shrink-0">${cost.toFixed(4)}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                <div className="space-y-3">
+                    <h3 className="text-sm font-semibold text-white mt-4">Recent Calls</h3>
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">
+                        {sessionHistory.slice(0, 50).map((s, i) => (
+                            <div key={i} className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/10">
+                                <div>
+                                    <div className="text-sm text-white font-medium capitalize">{s.provider}</div>
+                                    <div className="text-xs text-white/40 font-mono">{s.model}</div>
+                                </div>
+                                <div className="text-right">
+                                    <div className="text-xs text-emerald-400 font-mono">+${s.cost.toFixed(5)}</div>
+                                    <div className="text-[10px] text-white/30">{(s.inputTokens + s.outputTokens).toLocaleString()} tokens</div>
+                                </div>
+                            </div>
+                        ))}
+                        {sessionHistory.length === 0 && (
+                            <div className="text-center py-8 text-white/30 text-sm">No telemetry data recorded yet.</div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -1445,6 +1900,8 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                     {activeTab === 'Voice' && renderVoiceContent()}
                     {activeTab === 'Vision' && renderVisionContent && renderVisionContent()}
                     {activeTab === 'History' && renderHistoryContent()}
+                    {activeTab === 'Insights' && renderInsightsContent()}
+                    {activeTab === 'Coder' && renderCoderContent()}
                     {activeTab === 'Streaming' && renderStreamingContent()}
                     {activeTab === 'Hotkeys' && renderHotkeysContent()}
 

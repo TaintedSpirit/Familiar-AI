@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, Eye, EyeOff, Minimize2, Brain, HelpCircle, Sparkles, Mic, MicOff } from 'lucide-react';
+import { Settings, Eye, EyeOff, Minimize2, Brain, HelpCircle, Sparkles, Mic, MicOff, BookOpen, Monitor } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContextStore } from '../../services/context/ContextStore';
 import { useSettingsStore } from '../../services/settings/SettingsStore';
@@ -13,7 +13,18 @@ const CommandBar = ({ onCommand, onMenuAction, currentIntent = 'explain', onInte
     const [value, setValue] = useState('');
     const [isHovered, setIsHovered] = useState(false);
     const [isComputing, setIsComputing] = useState(false);
+    const [displays, setDisplays] = useState([]);
+    const [currentDisplayId, setCurrentDisplayId] = useState(null);
     const hoverTimeoutRef = React.useRef(null);
+
+    React.useEffect(() => {
+        window.electronAPI?.getAllDisplays?.().then(all => {
+            if (!all) return;
+            setDisplays(all);
+            const primary = all.find(d => d.primary) ?? all[0];
+            if (primary) setCurrentDisplayId(primary.id);
+        });
+    }, []);
 
     const isBlocked = useInnerWorldStore(s => s.publicState?.blocked ?? false);
     const riskLevel = useInnerWorldStore(s => s.publicState?.risk ?? 'low');
@@ -89,6 +100,14 @@ const CommandBar = ({ onCommand, onMenuAction, currentIntent = 'explain', onInte
         }, 300);
     };
 
+    const handleCycleDisplay = async () => {
+        if (displays.length < 2) return;
+        const idx = displays.findIndex(d => d.id === currentDisplayId);
+        const next = displays[(idx + 1) % displays.length];
+        await window.electronAPI?.moveCommandbarToDisplay?.(next.id);
+        setCurrentDisplayId(next.id);
+    };
+
     const handleSubmit = (e) => {
         e.preventDefault();
         if (value.trim()) {
@@ -102,7 +121,7 @@ const CommandBar = ({ onCommand, onMenuAction, currentIntent = 'explain', onInte
         { label: 'WORKFLOW', icon: null },
         { label: 'RITUALS', icon: null },
         { label: 'LOGS', icon: null },
-        { label: 'CHAT', icon: null },
+        { label: 'GRIMOIRE', icon: BookOpen },
         { label: 'MIND', icon: null },
         { label: 'MINIMIZE', icon: Minimize2 },
         { label: 'SETTINGS', icon: Settings },
@@ -133,6 +152,15 @@ const CommandBar = ({ onCommand, onMenuAction, currentIntent = 'explain', onInte
                     transition={{ duration: 0.2 }}
                     className="absolute bottom-full left-0 right-0 flex justify-center gap-3 pb-6"
                 >
+                    {displays.length > 1 && (
+                        <button
+                            onClick={handleCycleDisplay}
+                            className="aspect-square px-2 py-1.5 bg-black/60 backdrop-blur-md border border-white/10 rounded-full text-[10px] font-medium tracking-wider text-white/70 hover:bg-white/10 hover:text-white transition-colors flex items-center gap-2"
+                            title={`Move to next screen (${displays.findIndex(d => d.id === currentDisplayId) + 1}/${displays.length})`}
+                        >
+                            <Monitor className="w-4 h-4" />
+                        </button>
+                    )}
                     {menuItems.map((item) => (
                         <button
                             key={item.label}

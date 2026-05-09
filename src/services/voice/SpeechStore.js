@@ -46,7 +46,6 @@ export const useSpeechStore = create(
                 // Only persist settings, not runtime state
                 inputDeviceId: state.inputDeviceId,
                 outputDeviceId: state.outputDeviceId,
-                voiceMode: state.voiceMode,
                 voiceId: state.voiceId,
                 vadSensitivity: state.vadSensitivity,
                 speechProvider: state.speechProvider,

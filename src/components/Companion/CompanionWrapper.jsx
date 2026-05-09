@@ -65,21 +65,21 @@ const CompanionWrapper = ({
                 />
 
                 <Blob {...blobProps} innerWorldState={publicState} shouldPause={shouldPause} />
-            </motion.div>
 
-            {/* The Affordance Menu */}
-            <AnimatePresence>
-                {menuVisible && (
-                    <CompanionMenu
-                        publicState={publicState}
-                        isOpen={isOpen}
-                        visionEnabled={visionEnabled}
-                        onAction={onAction}
-                        onMouseEnter={showMenu}
-                        onMouseLeave={hideMenu}
-                    />
-                )}
-            </AnimatePresence>
+                {/* Affordance Menu — anchored to the blob container so it follows when dragged */}
+                <AnimatePresence>
+                    {menuVisible && (
+                        <CompanionMenu
+                            publicState={publicState}
+                            isOpen={isOpen}
+                            visionEnabled={visionEnabled}
+                            onAction={onAction}
+                            onMouseEnter={showMenu}
+                            onMouseLeave={hideMenu}
+                        />
+                    )}
+                </AnimatePresence>
+            </motion.div>
         </div>
     );
 };

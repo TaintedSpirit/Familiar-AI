@@ -1,14 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Zap, BarChart2, AlertTriangle, Database } from 'lucide-react';
+import { Zap, BarChart2, AlertTriangle, Database, GitBranch } from 'lucide-react';
 import { useActivityStore } from '../../../services/agent/ActivityStore';
 import { useInnerWorldStore } from '../../../services/innerworld/InnerWorldStore';
+import { useEvolutionStore } from '../../../services/forge/EvolutionStore';
 import ActivityTicker from '../ActivityTicker';
 import ToolBlock from '../ToolBlock';
 
 const MonitorModule = ({ activeTab }) => {
     const { activities, isCompacting } = useActivityStore();
     const { publicState } = useInnerWorldStore();
+    const { experiments, pendingMerge, history } = useEvolutionStore();
     const [memStats, setMemStats] = useState(null);
+
+    const activeExperiments = Object.values(experiments).filter(e => e.status === 'active').length;
+    const lastDecision = history[0];
 
     useEffect(() => {
         const fetchStats = async () => {
@@ -44,6 +49,28 @@ const MonitorModule = ({ activeTab }) => {
                     <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-300 text-xs">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                         Memory compaction in progress…
+                    </div>
+                )}
+
+                {/* Evolution status */}
+                {(activeExperiments > 0 || pendingMerge || lastDecision) && (
+                    <div className="bg-white/5 border border-white/5 rounded-xl p-3">
+                        <div className="text-[9px] uppercase tracking-widest text-white/30 mb-2 flex items-center gap-1.5">
+                            <GitBranch className="w-3 h-3" /> Evolution
+                        </div>
+                        <div className="space-y-1 text-[11px] text-white/60">
+                            <div>Active experiments: <span className="text-white/80">{activeExperiments}</span></div>
+                            {pendingMerge && (
+                                <div className="text-yellow-300/80">
+                                    ⚠ Pending merge — review in Forge → Evolution
+                                </div>
+                            )}
+                            {lastDecision && (
+                                <div className="text-white/40 text-[10px]">
+                                    Last: {lastDecision.decision} — {lastDecision.summary || lastDecision.sandboxId}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
 
@@ -105,6 +132,12 @@ const MonitorModule = ({ activeTab }) => {
                     }`} />
                     Risk: {publicState?.risk ?? 'nominal'}
                 </div>
+                {(activeExperiments > 0 || pendingMerge) && (
+                    <div className="flex items-center gap-1.5" style={{ color: pendingMerge ? '#e4c46a' : 'rgba(255,255,255,0.4)' }}>
+                        <GitBranch className="w-3 h-3" />
+                        {pendingMerge ? 'Merge pending' : `${activeExperiments} sandbox${activeExperiments === 1 ? '' : 'es'}`}
+                    </div>
+                )}
                 {isCompacting && (
                     <div className="flex items-center gap-1 text-yellow-400/60">
                         <AlertTriangle className="w-3 h-3" />

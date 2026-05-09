@@ -8,9 +8,14 @@ import {
     CheckCircle2, ExternalLink
 } from 'lucide-react';
 import { useMemoryStore } from '../../services/memory/MemoryStore';
+import { useSettingsStore } from '../../services/settings/SettingsStore';
 import { AGENT_REGISTRY } from '../../services/agent/AgentRegistry';
 import { useAgentTaskStore } from '../../services/agent/AgentTaskStore';
 import { agentSpawner } from '../../services/agent/AgentSpawner';
+import { forgeService } from '../../services/forge/ForgeService';
+import { MODEL_CATALOG } from '../../services/llm/ModelCatalog';
+import { executeCommand } from '../../services/commands/CommandRegistry';
+import CommandPalette from './CommandPalette';
 import ToolBlock from './ToolBlock';
 import ActivityTicker from './ActivityTicker';
 
@@ -197,46 +202,12 @@ const AgentAnnounceCard = ({ content, onViewDetails }) => {
     );
 };
 
-// ---------------------------------------------------------------------------
-// Slash-command resolver — returns a {role:'assistant', content} message or null
-// ---------------------------------------------------------------------------
-const resolveSlashCommand = (input) => {
-    const trimmed = input.trim();
-    if (!trimmed.startsWith('/')) return null;
-
-    const [cmd, ...rest] = trimmed.slice(1).split(/\s+/);
-
-    if (cmd === 'agents') {
-        const lines = Object.values(AGENT_REGISTRY).map(p =>
-            `**${p.name}** (${p.archetype})\n${p.description}\nTools: ${p.allowedTools.join(', ')}`
-        );
-        return `Pack Roster:\n\n${lines.join('\n\n')}\n\nUse: spawn_agent agentId="researcher|builder|auditor" task="…"`;
-    }
-
-    if (cmd === 'subagents') {
-        const list = agentSpawner.list();
-        if (!list.length) return 'No active sub-agents.';
-        const rows = list.map(s => `• [${s.id.slice(-6)}] "${s.label || s.task?.slice(0, 40)}" — ${s.runningFor}s`);
-        return `Active Sub-Agents (${list.length}):\n\n${rows.join('\n')}`;
-    }
-
-    if (cmd === 'stopagent') {
-        const targetId = rest[0];
-        if (!targetId) return 'Usage: /stopagent [id]';
-        const list = agentSpawner.list();
-        const match = list.find(s => s.id.endsWith(targetId) || s.id === targetId);
-        if (!match) return `No active agent matching "${targetId}".`;
-        agentSpawner.kill(match.id);
-        return `Agent [${match.id.slice(-6)}] "${match.label || match.task?.slice(0, 40)}" terminated.`;
-    }
-
-    return null; // not a recognized slash command
-};
+// Slash commands now live in src/services/commands/CommandRegistry.js.
 
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-const DetachedChat = ({ onClose, onSend }) => {
+const DetachedChat = ({ onClose, onSend, onOpenSettings }) => {
     const { projects, activeProjectId, switchProject, createProject, streamingText } = useMemoryStore();
     const activeProject = projects.find(p => p.id === activeProjectId);
     const messages = activeProject ? activeProject.messages : [];
@@ -245,6 +216,65 @@ const DetachedChat = ({ onClose, onSend }) => {
     const [isThinking, setIsThinking]   = useState(false);
     const [isListening, setIsListening] = useState(false);
     const [activeModule, setActiveModule] = useState('comms:chat');
+
+    // Command palette
+    const [paletteOpen, setPaletteOpen]   = useState(false);
+    const [paletteMode, setPaletteMode]   = useState('overlay');
+    const [paletteQuery, setPaletteQuery] = useState('');
+
+    const commandContext = React.useMemo(() => ({
+        memoryStore: useMemoryStore,
+        settingsStore: useSettingsStore,
+        agentSpawner,
+        agentRegistry: AGENT_REGISTRY,
+        forgeService,
+        modelCatalog: MODEL_CATALOG,
+        openSettings: onOpenSettings,
+    }), [onOpenSettings]);
+
+    const runSlashCommand = React.useCallback(async (raw) => {
+        const reply = await executeCommand(raw, commandContext);
+        if (reply == null) return false;
+        const { addMessage } = useMemoryStore.getState();
+        addMessage({ role: 'user', content: raw });
+        addMessage({ role: 'assistant', content: reply });
+        return true;
+    }, [commandContext]);
+
+    const executePaletteDef = React.useCallback(async (def) => {
+        if (def.argsHint && def.argsHint.includes('<')) {
+            setInputValue(`/${def.name} `);
+            setPaletteOpen(false);
+            return;
+        }
+        setPaletteOpen(false);
+        setPaletteQuery('');
+        await runSlashCommand(`/${def.name}`);
+    }, [runSlashCommand]);
+
+    useEffect(() => {
+        const onKey = (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                setPaletteMode('overlay');
+                setPaletteQuery('');
+                setPaletteOpen(o => !o);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
+
+    useEffect(() => {
+        if (inputValue.startsWith('/')) {
+            setPaletteMode('dropdown');
+            setPaletteQuery(inputValue);
+            setPaletteOpen(true);
+        } else if (paletteMode === 'dropdown') {
+            setPaletteOpen(false);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [inputValue]);
 
     const messagesEndRef = useRef(null);
     const dragControls   = useDragControls();
@@ -257,21 +287,16 @@ const DetachedChat = ({ onClose, onSend }) => {
         }
     }, [messages]);
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         const trimmed = inputValue.trim();
         if (!trimmed) return;
-
-        const slashResult = resolveSlashCommand(trimmed);
-        if (slashResult !== null) {
-            // Slash commands: echo the command as a user message, then inject the response locally
-            const { addMessage } = useMemoryStore.getState();
-            addMessage({ role: 'user', content: trimmed });
-            addMessage({ role: 'assistant', content: slashResult });
+        if (trimmed.startsWith('/')) {
+            const handled = await runSlashCommand(trimmed);
             setInputValue('');
-            return;
+            setPaletteOpen(false);
+            if (handled) return;
         }
-
         onSend(trimmed);
         setInputValue('');
         setIsThinking(true);
@@ -414,6 +439,16 @@ const DetachedChat = ({ onClose, onSend }) => {
                 onPointerDown={(e) => e.stopPropagation()}
             >
                 <div className="relative">
+                    {paletteMode === 'dropdown' && (
+                        <CommandPalette
+                            open={paletteOpen}
+                            mode="dropdown"
+                            query={paletteQuery}
+                            onQueryChange={(q) => { setPaletteQuery(q); setInputValue(q); }}
+                            onExecute={executePaletteDef}
+                            onClose={() => setPaletteOpen(false)}
+                        />
+                    )}
                     <textarea
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
@@ -479,6 +514,17 @@ const DetachedChat = ({ onClose, onSend }) => {
     // Render
     // -----------------------------------------------------------------------
     return (
+        <>
+        {paletteMode === 'overlay' && (
+            <CommandPalette
+                open={paletteOpen}
+                mode="overlay"
+                query={paletteQuery}
+                onQueryChange={setPaletteQuery}
+                onExecute={executePaletteDef}
+                onClose={() => setPaletteOpen(false)}
+            />
+        )}
         <motion.div
             drag
             dragControls={dragControls}
@@ -602,6 +648,7 @@ const DetachedChat = ({ onClose, onSend }) => {
                 </div>
             </div>
         </motion.div>
+        </>
     );
 };
 

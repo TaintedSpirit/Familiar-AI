@@ -64,9 +64,17 @@ export const memoryBridge = {
                 const activeId = state.activeProjectId;
                 const prevActiveId = prevState.activeProjectId;
 
+                // Helper: get messages for a project's active chat thread
+                const getActiveThreadMsgs = (projects, projectId) => {
+                    const proj = projects?.find(p => p.id === projectId);
+                    if (!proj) return [];
+                    const thread = proj.chatThreads?.find(t => t.id === proj.activeChatThreadId) ?? proj.chatThreads?.[0];
+                    return thread?.messages || proj.messages || [];
+                };
+
                 // Session archival: messages cleared (clearMessages called)
-                const prevMsgs = prevState.projects?.find(p => p.id === prevActiveId)?.messages || [];
-                const nextMsgs = state.projects?.find(p => p.id === activeId)?.messages || [];
+                const prevMsgs = getActiveThreadMsgs(prevState.projects, prevActiveId);
+                const nextMsgs = getActiveThreadMsgs(state.projects, activeId);
                 if (activeId === prevActiveId && prevMsgs.length >= 3 && nextMsgs.length === 0) {
                     const proj = prevState.projects?.find(p => p.id === prevActiveId);
                     archiveSession({ messages: prevMsgs, projectName: proj?.name }).catch(() => {});
@@ -75,7 +83,7 @@ export const memoryBridge = {
                 // Session archival: project switched with messages present
                 if (activeId !== prevActiveId) {
                     const prevProj = prevState.projects?.find(p => p.id === prevActiveId);
-                    const prevProjMsgs = prevProj?.messages || [];
+                    const prevProjMsgs = getActiveThreadMsgs(prevState.projects, prevActiveId);
                     if (prevProjMsgs.length >= 3) {
                         archiveSession({ messages: prevProjMsgs, projectName: prevProj?.name }).catch(() => {});
                     }

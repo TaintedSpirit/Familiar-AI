@@ -120,7 +120,11 @@ class DiscordBot {
         });
 
         this.client.login(token).catch((err) => {
-            console.error('[DiscordBot] Login failed:', err.message);
+            try {
+                console.error('[DiscordBot] Login failed:', err.message);
+            } catch (e) {
+                // Ignore EPIPE if stdout is closed
+            }
             this.isReady = false;
         });
     }

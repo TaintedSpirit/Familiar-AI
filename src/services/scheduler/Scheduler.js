@@ -99,9 +99,14 @@ class SchedulerService {
         if (this.longTermTimer) clearTimeout(this.longTermTimer);
     }
 
+    getLastActivityAt() {
+        return this._lastActivityAt ?? 0;
+    }
+
     start() {
         let timeout;
         const debouncedReset = () => {
+            this._lastActivityAt = Date.now();
             this.notify('ACTIVITY_DETECTED', null);
             if (timeout) clearTimeout(timeout);
             this.clearTimers();

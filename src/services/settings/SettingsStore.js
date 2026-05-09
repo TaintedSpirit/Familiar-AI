@@ -18,18 +18,22 @@ export const useSettingsStore = create(
 
             temperature: 0.7,
             topP: 0.95,
+            topK: 40,
+            autonomyLevel: 1,
             companionScale: 1.0,
             toolbarScale: 1.0,
             commandBarOpacity: 1.0,
             chatOpacity: 1.0,
 
             // Drag & Window Settings
+            windowMode: 'overlay', // 'overlay' (Full Screen) | 'compact' (Small Native Box)
             dragMode: 'manual', // 'native' (Framer) vs 'manual' (Custom Pointer)
             disableAotOnDrag: true,
             useOpaqueDrag: false,
             useIpcDrag: true, // DEFAULT ON for test phase
 
             // Actions
+            setWindowMode: (mode) => set({ windowMode: mode }),
             setDragMode: (mode) => set({ dragMode: mode }),
             setDisableAotOnDrag: (val) => set({ disableAotOnDrag: val }),
             setUseOpaqueDrag: (val) => set({ useOpaqueDrag: val }),
@@ -80,8 +84,18 @@ export const useSettingsStore = create(
             setDiscordCompanionChannels: (channels) => set({ discordCompanionChannels: channels }),
 
             // MCP Servers Configuration
-            mcpServers: {}, // Example: { sqlite: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-sqlite', '--db-path', 'test.db'] } }
+            // Per-server config:
+            //   { transport: 'stdio'|'sse'|'http', command?, args?, env?, url?, headers? }
+            // env / headers values may contain ${SETTINGS.<key>} which is resolved at connect time.
+            mcpServers: {},
             setMcpServers: (servers) => set({ mcpServers: servers }),
+
+            // Per-server approval policy: 'allow' | 'ask' | 'deny'.
+            // Default behavior (no entry) is 'allow' — matches pre-Phase-4 behavior.
+            mcpServerPolicies: {},
+            setMcpServerPolicy: (serverName, policy) => set(state => ({
+                mcpServerPolicies: { ...state.mcpServerPolicies, [serverName]: policy }
+            })),
 
             // Docker Sandbox (Track 1)
             dockerEnabled: false,
@@ -128,8 +142,46 @@ export const useSettingsStore = create(
             setHasOnboarded: (val) => set({ hasOnboarded: val }),
 
             // Familiar Identity
-            familiarName: '',
+            familiarName: 'Endai',
             setFamiliarName: (name) => set({ familiarName: name }),
+
+            // Wake-Word Gate — when on, the familiar only responds to messages
+            // that mention its name. Prevents the companion from reacting to
+            // every passing utterance, transcription, or webhook ping.
+            requireWakeWord: true,
+            setRequireWakeWord: (val) => set({ requireWakeWord: val }),
+
+            // Claude Code CLI integration — used by the run_claude_code tool.
+            claudeCodePath: 'claude',
+            claudeCodeCwd: '',
+            claudeCodePermissionMode: 'acceptEdits',
+            setClaudeCodePath: (val) => set({ claudeCodePath: val }),
+            setClaudeCodeCwd: (val) => set({ claudeCodeCwd: val }),
+            setClaudeCodePermissionMode: (val) => set({ claudeCodePermissionMode: val }),
+
+            // OpenAI Codex CLI integration — used by the run_codex tool.
+            codexPath: 'codex',
+            codexCwd: '',
+            codexApprovalMode: 'auto-edit',
+            setCodexPath: (val) => set({ codexPath: val }),
+            setCodexCwd: (val) => set({ codexCwd: val }),
+            setCodexApprovalMode: (val) => set({ codexApprovalMode: val }),
+
+            // Workspaces — saved project directories for the Forge
+            // Each: { id, name, path, pinned, lastOpened }
+            workspaces: [],
+            addWorkspace: (ws) => set(state => ({
+                workspaces: [ws, ...state.workspaces.filter(w => w.path !== ws.path)],
+            })),
+            updateWorkspace: (id, patch) => set(state => ({
+                workspaces: state.workspaces.map(w => w.id === id ? { ...w, ...patch } : w),
+            })),
+            removeWorkspace: (id) => set(state => ({
+                workspaces: state.workspaces.filter(w => w.id !== id),
+            })),
+            touchWorkspace: (id) => set(state => ({
+                workspaces: state.workspaces.map(w => w.id === id ? { ...w, lastOpened: Date.now() } : w),
+            })),
 
             // Context Management
             maxMessageHistory: 0, // 0 = unlimited; agent will summarize when exceeded
@@ -144,7 +196,9 @@ export const useSettingsStore = create(
             fallbackReason: null,
             setFallbackState: (active, reason = null) => set({ fallbackActive: active, fallbackReason: reason }),
 
+            voiceEnabled: false,
             setVoiceEnabled: (enabled) => set({ voiceEnabled: enabled }),
+            activePersona: 'default',
             setActivePersona: (persona) => set({ activePersona: persona }),
             setCompanionScale: (scale) => set({ companionScale: scale }),
             setToolbarScale: (scale) => set({ toolbarScale: scale }),
@@ -161,6 +215,22 @@ export const useSettingsStore = create(
             },
             setHotkey: (id, config) => set((state) => ({
                 hotkeys: { ...state.hotkeys, [id]: config }
+            })),
+
+            // Shell Hooks — user-defined JS intercept scripts in .ai-familiar/hooks/
+            hooksEnabled: false,
+            hooksAllowlist: [], // [{ hookPath: string, approved: boolean }]
+            setHooksEnabled: (val) => set({ hooksEnabled: val }),
+            setHooksAllowlist: (list) => set({ hooksAllowlist: list }),
+            approveHook: (hookPath) => set(state => {
+                const existing = state.hooksAllowlist.find(h => h.hookPath === hookPath);
+                if (existing) {
+                    return { hooksAllowlist: state.hooksAllowlist.map(h => h.hookPath === hookPath ? { ...h, approved: true } : h) };
+                }
+                return { hooksAllowlist: [...state.hooksAllowlist, { hookPath, approved: true }] };
+            }),
+            denyHook: (hookPath) => set(state => ({
+                hooksAllowlist: state.hooksAllowlist.map(h => h.hookPath === hookPath ? { ...h, approved: false } : h)
             })),
 
             // Global Environment & System Config (OpenClaw Parity)

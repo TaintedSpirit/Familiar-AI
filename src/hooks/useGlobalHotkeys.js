@@ -8,9 +8,9 @@ import { audioGraph } from '../services/voice/AudioGraph';
  * Registers global hotkey listeners via Electron IPC (uIOhook).
  * Must be called once at the top of the component tree.
  *
- * @param {object} callbacks  - { setShowDetachedChat, setShowSettings }
+ * @param {object} callbacks  - { setShowGrimoire, setShowSettings }
  */
-export function useGlobalHotkeys({ setShowDetachedChat, setShowSettings }) {
+export function useGlobalHotkeys({ setShowGrimoire, setShowSettings }) {
     useEffect(() => {
         if (!window.electronAPI) return;
 
@@ -48,7 +48,7 @@ export function useGlobalHotkeys({ setShowDetachedChat, setShowSettings }) {
                     else audioGraph.startInput();
                 }
                 if (isMatch(hotkeys?.toggleChat, data)) {
-                    setShowDetachedChat(prev => !prev);
+                    setShowGrimoire(prev => !prev);
                 }
                 if (isMatch(hotkeys?.toggleSettings, data)) {
                     setShowSettings(prev => !prev);
@@ -76,5 +76,5 @@ export function useGlobalHotkeys({ setShowDetachedChat, setShowSettings }) {
             removeMouseDown?.();
             removeMouseUp?.();
         };
-    }, [setShowDetachedChat, setShowSettings]);
+    }, [setShowGrimoire, setShowSettings]);
 }

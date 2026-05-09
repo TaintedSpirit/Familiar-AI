@@ -2,7 +2,8 @@
  * ToolApprovalGate — per-tool policy gating before execution.
  *
  * Resolution order:
- *  1. MCP tools → always allow
+ *  1. MCP tools → consult mcpServerPolicies[<server>] ('allow'|'ask'|'deny');
+ *     unset entries default to 'allow' to preserve pre-Phase-4 behavior.
  *  2. toolPolicies[name] === 'deny'  → block immediately
  *  3. toolPolicies[name] === 'allow' → pass immediately
  *  4. autonomyLevel ≥ 80             → pass (high autonomy = trust all)
@@ -32,11 +33,27 @@ async function getSettings() {
 
 export const toolApprovalGate = {
     async requestApproval(toolName, args) {
-        if (toolName.startsWith('mcp_')) return true;
-        if (SAFE_TOOLS.has(toolName)) return true;
-
         const settings = await getSettings();
-        const { toolPolicies = {}, allowedWritePaths = [], autonomyLevel = 50 } = settings;
+        const {
+            toolPolicies = {}, allowedWritePaths = [], autonomyLevel = 50,
+            mcpServerPolicies = {},
+        } = settings;
+
+        if (toolName.startsWith('mcp_')) {
+            // mcp_<server>__<rest> — extract server name and apply per-server policy.
+            const m = toolName.match(/^mcp_(.+?)__/);
+            const serverName = m ? m[1] : null;
+            const policy = serverName ? mcpServerPolicies[serverName] : null;
+            if (policy === 'deny') return false;
+            if (policy === 'allow' || !policy) return true;
+            // 'ask' → native confirm
+            const argPreview = Object.entries(args || {})
+                .slice(0, 2)
+                .map(([k, v]) => `${k}: ${String(v).slice(0, 80)}`)
+                .join('\n');
+            return window.confirm(`Allow MCP server "${serverName}" to run: ${toolName}\n\n${argPreview}\n\nApprove?`);
+        }
+        if (SAFE_TOOLS.has(toolName)) return true;
 
         // Explicit policy check
         const policy = toolPolicies[toolName];

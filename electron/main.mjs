@@ -1,17 +1,22 @@
+// VSCode sets ELECTRON_RUN_AS_NODE=1 for child processes; the npm script clears it.
+// Electron 40 ESM: APIs come through the default import of 'electron'
 import electronDefault from 'electron';
-const { app, BrowserWindow, screen, ipcMain, desktopCapturer } = electronDefault;
+const { app, BrowserWindow, screen, ipcMain, desktopCapturer, dialog } = electronDefault;
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import fs from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
+import { mcpManager } from './MCPManager.mjs';
 
 const execPromise = promisify(exec);
-
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+process.stdout.on('error', (err) => { if (err.code !== 'EPIPE') throw err; });
+process.stderr.on('error', (err) => { if (err.code !== 'EPIPE') throw err; });
 
 // Native modules must be loaded via createRequire
 const activeWindow = require('active-win');
@@ -19,7 +24,7 @@ const { uIOhook } = require('uiohook-napi');
 const discordBot = require('./discordBot.cjs');
 const MemoryIpc = require('./memory/MemoryIpc.cjs');
 const { WebhookGateway } = require('./WebhookGateway.cjs');
-import { mcpManager } from './MCPManager.mjs';
+const { registerForgeIpc } = require('./forgeMerge.cjs');
 
 const webhookGateway = new WebhookGateway();
 
@@ -178,6 +183,9 @@ app.whenReady().then(async () => {
     // Setup MCP Handlers
     mcpManager.registerIpcHandlers(ipcMain);
 
+    // Setup Forge IPC (sandbox lifecycle, diff, benchmarks, merge)
+    registerForgeIpc(ipcMain, dialog);
+
     createCompanionWindow();
     createCommandBarWindow();
 
@@ -283,6 +291,8 @@ app.whenReady().then(async () => {
     });
 
     ipcMain.handle('fs-write-file', async (_e, filePath, content) => {
+        // Auto-mkdir parent so callers don't have to think about it.
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
         await fs.writeFile(filePath, content, 'utf8');
         return true;
     });
@@ -292,9 +302,213 @@ app.whenReady().then(async () => {
         return entries.map(e => ({ name: e.name, isDir: e.isDirectory() }));
     });
 
+    ipcMain.handle('fs-mkdir', async (_e, dirPath) => {
+        await fs.mkdir(dirPath, { recursive: true });
+        return true;
+    });
+
+    ipcMain.handle('fs-delete-file', async (_e, filePath) => {
+        await fs.rm(filePath, { force: true });
+        return true;
+    });
+
+    // Shell hook runner — executes a user-provided JS hook script via Node,
+    // passing a JSON payload on stdin and returning the parsed stdout JSON.
+    ipcMain.handle('hooks:run', async (_e, hookPath, payload) => {
+        try {
+            const { execFileSync } = require('child_process');
+            const input = JSON.stringify(payload);
+            const stdout = execFileSync(process.execPath, [hookPath], {
+                input,
+                encoding: 'utf8',
+                timeout: 5000,
+                maxBuffer: 1024 * 64,
+            });
+            return stdout.trim() ? JSON.parse(stdout.trim()) : { action: 'allow' };
+        } catch (e) {
+            console.warn('[HookRunner] Hook failed:', hookPath, e.message);
+            return { action: 'allow' };
+        }
+    });
+
     ipcMain.handle('fs-run-command', async (_e, command) => {
         const { stdout, stderr } = await execPromise(command, { timeout: 30000 });
         return { stdout, stderr };
+    });
+
+    ipcMain.handle('fs-run-command-in', async (_e, { command, cwd }) => {
+        try {
+            const { stdout, stderr } = await execPromise(command, { cwd, timeout: 10000 });
+            return { stdout: stdout.trim(), stderr: stderr.trim() };
+        } catch (err) {
+            return { stdout: '', stderr: err.message, error: true };
+        }
+    });
+
+    ipcMain.handle('dialog:open-dir', async (event) => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        const result = await dialog.showOpenDialog(win, {
+            properties: ['openDirectory'],
+            title: 'Select Project Folder',
+        });
+        return result.canceled ? null : result.filePaths[0];
+    });
+
+    // ─── Claude Code streaming spawn ─────────────────────────────────────────
+    // Long-running subprocess (minutes); cannot reuse 30s exec channel.
+    const claudeCodeProcs = new Map(); // pid → ChildProcess
+
+    ipcMain.handle('claude-code:start', async (event, { task, cwd, permissionMode, binPath }) => {
+        if (!task) return { error: 'task is required' };
+        const bin = binPath || 'claude';
+        const mode = permissionMode || 'acceptEdits';
+        const args = ['--print', '--permission-mode', mode, task];
+        let child;
+        try {
+            child = spawn(bin, args, {
+                cwd: cwd || undefined,
+                shell: process.platform === 'win32', // .cmd shim on Windows
+                env: process.env,
+            });
+        } catch (e) {
+            return { error: `spawn failed: ${e.message}` };
+        }
+
+        const pid = child.pid;
+        if (!pid) return { error: 'spawn produced no pid' };
+        claudeCodeProcs.set(pid, child);
+
+        const sender = event.sender;
+        const send = (channel, payload) => {
+            if (!sender.isDestroyed()) sender.send(channel, payload);
+        };
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.on('data', (buf) => {
+            const chunk = buf.toString('utf8');
+            stdout += chunk;
+            send('claude-code:stdout', { pid, chunk });
+        });
+
+        child.stderr.on('data', (buf) => {
+            const chunk = buf.toString('utf8');
+            stderr += chunk;
+            send('claude-code:stderr', { pid, chunk });
+        });
+
+        child.on('error', (err) => {
+            claudeCodeProcs.delete(pid);
+            send('claude-code:exit', { pid, code: -1, signal: null, stdout, stderr: stderr + `\nspawn error: ${err.message}`, error: err.message });
+        });
+
+        child.on('close', (code, signal) => {
+            claudeCodeProcs.delete(pid);
+            send('claude-code:exit', { pid, code, signal, stdout, stderr });
+        });
+
+        return { pid };
+    });
+
+    ipcMain.handle('claude-code:cancel', async (_e, pid) => {
+        const child = claudeCodeProcs.get(pid);
+        if (!child) return { ok: false, reason: 'not running' };
+        try {
+            // SIGTERM on POSIX, taskkill on Windows
+            if (process.platform === 'win32') {
+                spawn('taskkill', ['/pid', String(pid), '/f', '/t']);
+            } else {
+                child.kill('SIGTERM');
+            }
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, reason: e.message };
+        }
+    });
+
+    // Cleanup on app quit — never leave Claude subprocesses orphaned
+    app.on('before-quit', () => {
+        for (const child of claudeCodeProcs.values()) {
+            try { child.kill('SIGTERM'); } catch { /* ignore */ }
+        }
+        claudeCodeProcs.clear();
+        for (const child of codexProcs.values()) {
+            try { child.kill('SIGTERM'); } catch { /* ignore */ }
+        }
+        codexProcs.clear();
+    });
+
+    // ─── OpenAI Codex CLI streaming spawn ────────────────────────────────────
+    // Long-running subprocess (minutes); cannot reuse 30s exec channel.
+    const codexProcs = new Map(); // pid → ChildProcess
+
+    ipcMain.handle('codex:start', async (event, { task, cwd, approvalMode, binPath }) => {
+        if (!task) return { error: 'task is required' };
+        const bin = binPath || 'codex';
+        const mode = approvalMode || 'auto-edit';
+        const args = ['--approval-mode', mode, task];
+        let child;
+        try {
+            child = spawn(bin, args, {
+                cwd: cwd || undefined,
+                shell: process.platform === 'win32',
+                env: process.env,
+            });
+        } catch (e) {
+            return { error: `spawn failed: ${e.message}` };
+        }
+
+        const pid = child.pid;
+        if (!pid) return { error: 'spawn produced no pid' };
+        codexProcs.set(pid, child);
+
+        const sender = event.sender;
+        const send = (channel, payload) => {
+            if (!sender.isDestroyed()) sender.send(channel, payload);
+        };
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout.on('data', (buf) => {
+            const chunk = buf.toString('utf8');
+            stdout += chunk;
+            send('codex:stdout', { pid, chunk });
+        });
+
+        child.stderr.on('data', (buf) => {
+            const chunk = buf.toString('utf8');
+            stderr += chunk;
+            send('codex:stderr', { pid, chunk });
+        });
+
+        child.on('error', (err) => {
+            codexProcs.delete(pid);
+            send('codex:exit', { pid, code: -1, signal: null, stdout, stderr: stderr + `\nspawn error: ${err.message}`, error: err.message });
+        });
+
+        child.on('close', (code, signal) => {
+            codexProcs.delete(pid);
+            send('codex:exit', { pid, code, signal, stdout, stderr });
+        });
+
+        return { pid };
+    });
+
+    ipcMain.handle('codex:cancel', async (_e, pid) => {
+        const child = codexProcs.get(pid);
+        if (!child) return { ok: false, reason: 'not running' };
+        try {
+            if (process.platform === 'win32') {
+                spawn('taskkill', ['/pid', String(pid), '/f', '/t']);
+            } else {
+                child.kill('SIGTERM');
+            }
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, reason: e.message };
+        }
     });
 
     ipcMain.on('window-controls', (event, action) => {
@@ -314,6 +528,75 @@ app.whenReady().then(async () => {
         win.setSize(newW, newH, false);
         win.setPosition(currentPos[0], screenH - newH - yOffset, false);
         win.setIgnoreMouseEvents(false);
+    });
+
+    ipcMain.on('set-window-mode', (event, mode) => {
+        if (!companionWindow || companionWindow.isDestroyed()) return;
+
+        companionWindow.setResizable(true);
+
+        if (mode === 'compact') {
+            companionWindow.setSize(350, 450, false);
+            // In compact mode, we need the background to receive mouse events for dragging
+            companionWindow.setIgnoreMouseEvents(false);
+        } else {
+            const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+            companionWindow.setSize(width, height, false);
+            companionWindow.setPosition(0, 0, false);
+            // In full screen mode, click-through unless hovering over an active element
+            companionWindow.setIgnoreMouseEvents(true, { forward: true });
+        }
+        
+        companionWindow.setResizable(false);
+    });
+
+    ipcMain.handle('get-displays', () => {
+        const primary = screen.getPrimaryDisplay();
+        return screen.getAllDisplays().map(d => ({
+            id: d.id,
+            label: d.label || `Display ${d.id}`,
+            workArea: d.workArea,
+            primary: d.id === primary.id,
+        }));
+    });
+
+    ipcMain.handle('move-commandbar-to-display', (_event, displayId) => {
+        if (!commandBarWindow || commandBarWindow.isDestroyed()) return { success: false };
+        const displays = screen.getAllDisplays();
+        const target = displays.find(d => d.id === displayId) ?? screen.getPrimaryDisplay();
+        const { x, y, width, height } = target.workArea;
+        commandBarWindow.setBounds({ x, y, width, height });
+        return { success: true };
+    });
+
+    let dragInterval = null;
+
+    ipcMain.on('window-drag-start', (event) => {
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (!win || win.isDestroyed()) return;
+
+        if (dragInterval) clearInterval(dragInterval);
+
+        const { x: cursorX, y: cursorY } = screen.getCursorScreenPoint();
+        const [winX, winY] = win.getPosition();
+        const offsetX = cursorX - winX;
+        const offsetY = cursorY - winY;
+
+        dragInterval = setInterval(() => {
+            if (win.isDestroyed()) {
+                clearInterval(dragInterval);
+                return;
+            }
+            const { x, y } = screen.getCursorScreenPoint();
+            win.setPosition(x - offsetX, y - offsetY, false);
+        }, 16); // ~60fps manual drag
+    });
+
+    ipcMain.on('window-drag-end', () => {
+        if (dragInterval) {
+            clearInterval(dragInterval);
+            dragInterval = null;
+        }
     });
 
     ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {

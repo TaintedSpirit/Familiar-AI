@@ -6,7 +6,7 @@ import CompanionWrapper from './components/Companion/CompanionWrapper';
 import CommandBar from './components/UI/CommandBar';
 import InnerWorldHUD from './components/UI/InnerWorldHUD';
 import SettingsHUD from './components/UI/SettingsHUD';
-import DetachedChat from './components/UI/DetachedChat';
+import GrimoireDashboard from './components/UI/GrimoireDashboard';
 import ActivityTicker from './components/UI/ActivityTicker';
 import GrimoireOnboarding from './components/UI/GrimoireOnboarding';
 
@@ -83,8 +83,7 @@ function App() {
   const [showRituals, setShowRituals] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [activeArtifact, setActiveArtifact] = useState(null);
-  const [showDetachedChat, setShowDetachedChat] = useState(false);
-  const [isUndocked, setIsUndocked] = useState(false);
+  const [showGrimoire, setShowGrimoire] = useState(false);
   const [blobState, setBlobState] = useState('idle');
   const [idleThought, setIdleThought] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -117,7 +116,8 @@ function App() {
     toolbarScale,
     commandBarOpacity,
     chatOpacity,
-    mcpServers
+    mcpServers,
+    windowMode
   } = useSettingsStore();
 
   // Speech Store
@@ -168,6 +168,16 @@ function App() {
   // --- Soul Loader Init ---
   useEffect(() => {
     soulLoader.load().catch(e => console.warn('[App] SoulLoader init failed:', e));
+  }, []);
+
+  // --- Window Mode Init ---
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.setWindowMode) {
+      // ONLY shrink the companion window! The command bar must stay full-screen transparent.
+      if (window.location.hash.includes('companion')) {
+        window.electronAPI.setWindowMode(useSettingsStore.getState().windowMode);
+      }
+    }
   }, []);
 
   // --- MCP Client Init ---
@@ -278,7 +288,7 @@ function App() {
   }, [telegramEnabled, telegramBotToken, telegramUserId]);
 
   // --- Global Hotkey PTT (extracted to hook) ---
-  useGlobalHotkeys({ setShowDetachedChat, setShowSettings });
+  useGlobalHotkeys({ setShowGrimoire, setShowSettings });
 
   // Hard Reset Hook
   useEffect(() => {
@@ -332,6 +342,24 @@ function App() {
   // --- Action Handlers ---
   const handleCommand = async (text, options = {}) => {
     console.log("[App] Command:", text);
+
+    // Wake-word gate — when enabled, only respond if the familiar's name is
+    // spoken/typed. Bypassed by callers that pass `bypassWakeWord: true`
+    // (e.g. internal tool follow-ups). UI-typed chat still goes through.
+    if (!options.bypassWakeWord) {
+      const { requireWakeWord, familiarName } = useSettingsStore.getState();
+      const wakeWord = (familiarName || 'Endai').trim();
+      if (requireWakeWord && wakeWord) {
+        const re = new RegExp(`\\b${wakeWord.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i');
+        if (!re.test(text)) {
+          console.log(`[App] Ignored — wake word "${wakeWord}" not present.`);
+          if (options.source === 'voice' || options.source === 'webhook') return;
+          // For typed UI input, surface a hint instead of silently dropping
+          addMessage({ role: 'system', content: `(silent) Address me by name — say "${wakeWord}" to wake me. Disable this in Settings → Identity.`, id: Date.now() });
+          return;
+        }
+      }
+    }
 
     // Evaluate risk before processing
     useInnerWorldStore.getState().evaluate();
@@ -430,6 +458,9 @@ function App() {
     const handleGlobalPointerUp = (e) => {
       // Always reset dragging state
       setIsDragging(false);
+      if (window.electronAPI && window.electronAPI.windowDragEnd) {
+        window.electronAPI.windowDragEnd();
+      }
     };
     window.addEventListener('pointerup', handleGlobalPointerUp);
     return () => window.removeEventListener('pointerup', handleGlobalPointerUp);
@@ -456,21 +487,39 @@ function App() {
   const handleMouseLeaveValues = () => {
     setIsHovering(false);
     // Tell Electron to IGNORE mouse events (pass through to desktop)
-    // Only if we aren't dragging!
-    if (!isDragging) {
+    // Only if we aren't dragging AND no full-screen modal is open!
+    if (!isDragging && !showSettings && !showGrimoire) {
       window.electronAPI.send('set-ignore-mouse-events', true, { forward: true });
     }
   };
 
+  // Lock mouse event capture while a full-screen modal is open.
+  // Native <select> dropdowns render outside the Electron window bounds, so without
+  // this lock the mouseleave handler would re-enable pass-through and swallow the click.
+  useEffect(() => {
+    if ((showSettings || showGrimoire) && window.electronAPI) {
+      window.electronAPI.send('set-ignore-mouse-events', false);
+      return () => {
+        window.electronAPI.send('set-ignore-mouse-events', true, { forward: true });
+      };
+    }
+  }, [showSettings, showGrimoire]);
+
   // --- Render Helpers ---
   const renderCompanion = () => (
-    <div className="absolute top-20 right-20 w-auto h-auto pointer-events-none">
+    <div className={windowMode === 'compact' ? "flex items-center justify-center w-full h-full pointer-events-none relative" : "absolute top-20 right-20 w-auto h-auto pointer-events-none"}>
       <InnerWorldHUD />
       <motion.div
-        drag
+        drag={windowMode === 'overlay'}
         dragMomentum={false}
         onDragStart={() => setIsDragging(true)}
         onDragEnd={() => { setIsDragging(false); handleMouseLeaveValues(); }}
+        onPointerDown={(e) => {
+          setIsDragging(true);
+          if (windowMode === 'compact') {
+            window.electronAPI.windowDragStart();
+          }
+        }}
         style={{
           scale: companionScale || 1.0,
         }}
@@ -534,10 +583,7 @@ function App() {
               if (action === 'SETTINGS') setShowSettings(true);
               if (action === 'RITUALS') setShowRituals(p => !p);
               if (action === 'LOGS') setShowLogs(p => !p);
-              if (action === 'CHAT') {
-                setShowDetachedChat(p => !p);
-                setIsUndocked(p => !p);
-              }
+              if (action === 'GRIMOIRE') setShowGrimoire(p => !p);
             }}
           />
 
@@ -554,7 +600,7 @@ function App() {
       {/* Global Overlays (Settings, Chat, Notifications) - Positioned Absolutely on Screen */}
 
       {showSettings && (
-        <div className="pointer-events-auto" onMouseEnter={handleMouseEnterValues} onMouseLeave={handleMouseLeaveValues}>
+        <div className="pointer-events-auto">
           <SettingsHUD onClose={() => setShowSettings(false)} discordConnected={discordConnected} />
         </div>
       )}
@@ -653,21 +699,18 @@ function App() {
       </div>
 
       <AnimatePresence>
-        {showDetachedChat && (
-          <div className="absolute right-20 bottom-40 z-50 pointer-events-auto">
+        {showGrimoire && (
+          <div className="absolute inset-0 flex items-center justify-center z-50 pointer-events-none">
             <motion.div
-              drag
-              dragMomentum={false}
-              onDragStart={() => setIsDragging(true)}
-              onDragEnd={() => { setIsDragging(false); handleMouseLeaveValues(); }}
               onMouseEnter={handleMouseEnterValues}
               onMouseLeave={handleMouseLeaveValues}
-              style={{ opacity: chatOpacity !== undefined ? chatOpacity : 1.0 }}
+              className="pointer-events-auto"
             >
-              <DetachedChat onClose={() => {
-                setShowDetachedChat(false);
-                setIsUndocked(false);
-              }} onSend={handleCommand} />
+              <GrimoireDashboard
+                onClose={() => setShowGrimoire(false)}
+                onSend={handleCommand}
+                onOpenSettings={() => setShowSettings(true)}
+              />
             </motion.div>
           </div>
         )}

@@ -9,7 +9,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "electron": "wait-on tcp:5173 && electron .",
+    "electron": "wait-on tcp:5173 && node electron/run.cjs",
     "electron:dev": "concurrently -k \"cross-env BROWSER=none npm run dev\" \"npm run electron\"",
     "electron:build": "vite build && electron-builder",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
@@ -18,6 +18,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@monaco-editor/react": "^4.7.0",
     "active-win": "^8.2.1",
     "better-sqlite3": "^12.9.0",
     "chokidar": "^4.0.3",

@@ -35,8 +35,16 @@ export const useContextStore = create((set, get) => ({
 
     toggleAwareness: (enabled) => {
         set({ awarenessEnabled: enabled });
-        if (enabled) window.electronAPI.send('start-awareness');
-        else window.electronAPI.send('stop-awareness');
+        if (enabled) {
+            window.electronAPI.send('start-awareness');
+        } else {
+            window.electronAPI.send('stop-awareness');
+            // Drop stale screen state so it can't leak into future prompts
+            set({ activeApp: null, activeTitle: null, activeUrl: null, sharedContext: null });
+            import('../perception/PerceptionStore.js')
+                .then(({ usePerceptionStore }) => usePerceptionStore?.getState().clear?.())
+                .catch(() => {});
+        }
     },
 
     suspendAwareness: () => {

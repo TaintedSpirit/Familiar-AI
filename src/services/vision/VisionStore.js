@@ -8,7 +8,7 @@ export const useVisionStore = create((set, get) => ({
     lastCaptureSource: null, // 'manual' | 'interval'
     visionSummary: null, // Text description of the screen (from LLM)
     visionStatus: 'none', // 'none' | 'visualizing' | 'live' | 'stale'
-    isAwarenessEnabled: true, // Default ON
+    isAwarenessEnabled: false, // Default OFF
 
     // Raw Data (Optional - Keep minimal)
     currentScreenshot: null, // Base64

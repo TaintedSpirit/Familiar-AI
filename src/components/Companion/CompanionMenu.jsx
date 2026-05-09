@@ -51,7 +51,7 @@ const CompanionMenu = ({ publicState, isOpen, visionEnabled, onAction, onMouseEn
             initial={{ opacity: 0, scale: 0.9, y: 10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.9, y: 10 }}
-            className="absolute bottom-[-60px] flex flex-row gap-2 items-center bg-black/60 backdrop-blur-md p-2 rounded-full border border-white/10 shadow-xl z-50 pointer-events-auto"
+            className="absolute top-full mt-3 left-1/2 -translate-x-1/2 flex flex-row gap-2 items-center bg-black/60 backdrop-blur-md p-2 rounded-full border border-white/10 shadow-xl z-50 pointer-events-auto"
             onMouseEnter={onMouseEnter}
             onMouseLeave={onMouseLeave}
         >

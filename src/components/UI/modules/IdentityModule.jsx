@@ -17,7 +17,7 @@ const ARCHETYPE_COLORS = {
 const FORM_ORDER = ['seed_blob', 'orb_node', 'glyph_symbol', 'avatar_construct'];
 
 const IdentityModule = ({ activeTab }) => {
-    const { familiarName, setFamiliarName, soulProfile } = useSettingsStore();
+    const { familiarName, setFamiliarName, soulProfile, requireWakeWord, setRequireWakeWord } = useSettingsStore();
     const { currentFormId, unlockedForms, setCurrentForm, metrics } = useFormStore();
 
     const [nameDraft, setNameDraft] = useState(familiarName ?? '');
@@ -96,6 +96,33 @@ const IdentityModule = ({ activeTab }) => {
                         {saved ? 'Saved' : 'Save'}
                     </button>
                 </div>
+            </div>
+
+            {/* Wake-word gate */}
+            <div className="space-y-2">
+                <div className="text-[9px] uppercase tracking-widest text-white/30">Wake Word</div>
+                <button
+                    onClick={() => setRequireWakeWord(!requireWakeWord)}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-left transition-colors ${
+                        requireWakeWord
+                            ? 'bg-blue-500/15 border-blue-500/30'
+                            : 'bg-white/5 border-white/10 hover:bg-white/10'
+                    }`}
+                >
+                    <div>
+                        <div className={`text-xs ${requireWakeWord ? 'text-blue-200' : 'text-white/60'}`}>
+                            Require name to respond
+                        </div>
+                        <div className="text-[10px] text-white/30 mt-0.5">
+                            {requireWakeWord
+                                ? `Only replies when "${familiarName || 'Endai'}" is in the message.`
+                                : 'Replies to every message.'}
+                        </div>
+                    </div>
+                    <div className={`w-8 h-4 rounded-full relative transition-colors ${requireWakeWord ? 'bg-blue-500/60' : 'bg-white/10'}`}>
+                        <div className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${requireWakeWord ? 'translate-x-4' : 'translate-x-0'}`} />
+                    </div>
+                </button>
             </div>
 
             {/* Soul profile summary */}

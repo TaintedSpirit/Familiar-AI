@@ -15,17 +15,35 @@ async function attachBridge(store) {
     }
 }
 
+function makeGeneralThread(projectId, existingMessages = []) {
+    return {
+        id: `thread_general_${projectId}`,
+        title: 'General',
+        messages: existingMessages,
+        createdAt: Date.now(),
+        lastActivityAt: Date.now(),
+    };
+}
+
+function getActiveThread(state) {
+    const proj = state.projects.find(p => p.id === state.activeProjectId);
+    if (!proj) return null;
+    return proj.chatThreads?.find(t => t.id === proj.activeChatThreadId) ?? proj.chatThreads?.[0] ?? null;
+}
+
 export const useMemoryStore = create(persist((set, get) => ({
     projects: [
         {
             id: 'default',
             name: 'Living Desktop Companion',
             created: Date.now(),
-            messages: [],
+            messages: [], // legacy compat — no longer written to
+            chatThreads: [makeGeneralThread('default')],
+            activeChatThreadId: 'thread_general_default',
             memory: [],
             keyDecisions: [],
             artifacts: [],
-            threads: [], // { id, title, origin, status, lastActivityAt, summary }
+            threads: [], // { id, title, origin, status, lastActivityAt, summary } — agent task threads
             activeVoiceId: null, // Overrides global setting if set
             trustLevel: 'observe' // 'observe' | 'assist' | 'execute'
         }
@@ -42,15 +60,19 @@ export const useMemoryStore = create(persist((set, get) => ({
     // Actions
     createProject: (name) => set((state) => {
         const newId = Date.now().toString();
+        const generalThread = makeGeneralThread(newId);
         return {
             projects: [...state.projects, {
                 id: newId,
                 name,
                 created: Date.now(),
                 messages: [],
-                memory: [], // Context ingestion
+                chatThreads: [generalThread],
+                activeChatThreadId: generalThread.id,
+                memory: [],
                 keyDecisions: [],
-                artifacts: []
+                artifacts: [],
+                threads: [],
             }],
             activeProjectId: newId
         };
@@ -86,24 +108,94 @@ export const useMemoryStore = create(persist((set, get) => ({
     setStreamingText: (text) => set({ streamingText: text }),
     clearStreamingText: () => set({ streamingText: null }),
 
+    // ── Chat Thread Management ─────────────────────────────────────────────────
+
+    addChatThread: (title) => set((state) => {
+        const newId = `thread_${Date.now()}`;
+        const newThread = {
+            id: newId,
+            title: title || 'New Chapter',
+            messages: [],
+            createdAt: Date.now(),
+            lastActivityAt: Date.now(),
+        };
+        return {
+            projects: state.projects.map(p => p.id === state.activeProjectId ? {
+                ...p,
+                chatThreads: [...(p.chatThreads || []), newThread],
+                activeChatThreadId: newId,
+            } : p)
+        };
+    }),
+
+    switchChatThread: (threadId) => set((state) => ({
+        projects: state.projects.map(p => p.id === state.activeProjectId ?
+            { ...p, activeChatThreadId: threadId } : p
+        )
+    })),
+
+    deleteChatThread: (threadId) => set((state) => {
+        const proj = state.projects.find(p => p.id === state.activeProjectId);
+        if (!proj || (proj.chatThreads || []).length <= 1) return state; // guard: keep last thread
+        const remaining = (proj.chatThreads || []).filter(t => t.id !== threadId);
+        const newActiveId = proj.activeChatThreadId === threadId ? remaining[0].id : proj.activeChatThreadId;
+        return {
+            projects: state.projects.map(p => p.id === state.activeProjectId ? {
+                ...p,
+                chatThreads: remaining,
+                activeChatThreadId: newActiveId,
+            } : p)
+        };
+    }),
+
+    renameChatThread: (threadId, newTitle) => set((state) => ({
+        projects: state.projects.map(p => p.id === state.activeProjectId ? {
+            ...p,
+            chatThreads: (p.chatThreads || []).map(t => t.id === threadId ? { ...t, title: newTitle } : t),
+        } : p)
+    })),
+
     // Active Project Data Mutators
     addMessage: (msg) => set((state) => ({
-        projects: state.projects.map(p => p.id === state.activeProjectId ?
-            { ...p, messages: [...p.messages, msg] } : p
-        )
+        projects: state.projects.map(p => {
+            if (p.id !== state.activeProjectId) return p;
+            const threadId = p.activeChatThreadId;
+            return {
+                ...p,
+                chatThreads: (p.chatThreads || []).map(t => t.id === threadId
+                    ? { ...t, messages: [...t.messages, msg], lastActivityAt: Date.now() }
+                    : t
+                )
+            };
+        })
     })),
 
     updateMessage: (id, updates) => set((state) => ({
-        projects: state.projects.map(p => p.id === state.activeProjectId
-            ? { ...p, messages: p.messages.map(m => m.id === id ? { ...m, ...updates } : m) }
-            : p
-        )
+        projects: state.projects.map(p => {
+            if (p.id !== state.activeProjectId) return p;
+            const threadId = p.activeChatThreadId;
+            return {
+                ...p,
+                chatThreads: (p.chatThreads || []).map(t => t.id === threadId
+                    ? { ...t, messages: t.messages.map(m => m.id === id ? { ...m, ...updates } : m) }
+                    : t
+                )
+            };
+        })
     })),
 
     clearMessages: () => set((state) => ({
-        projects: state.projects.map(p => p.id === state.activeProjectId ?
-            { ...p, messages: [] } : p
-        )
+        projects: state.projects.map(p => {
+            if (p.id !== state.activeProjectId) return p;
+            const threadId = p.activeChatThreadId;
+            return {
+                ...p,
+                chatThreads: (p.chatThreads || []).map(t => t.id === threadId
+                    ? { ...t, messages: [], lastActivityAt: Date.now() }
+                    : t
+                )
+            };
+        })
     })),
 
     addMemory: (text) => set((state) => ({
@@ -183,7 +275,27 @@ export const useMemoryStore = create(persist((set, get) => ({
         })
     }))
 }), {
-    name: 'ai-familiar-storage', // unique name
+    name: 'ai-familiar-storage',
+    onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        // Migrate projects that predate chatThreads
+        state.projects = state.projects.map(p => {
+            if (p.chatThreads) return p; // already migrated
+            const generalThread = {
+                id: `thread_general_${p.id}`,
+                title: 'General',
+                messages: p.messages || [],
+                createdAt: p.created || Date.now(),
+                lastActivityAt: Date.now(),
+            };
+            return {
+                ...p,
+                chatThreads: [generalThread],
+                activeChatThreadId: generalThread.id,
+                messages: [],
+            };
+        });
+    },
 }));
 
 // Attach the long-term memory bridge once the store is ready.

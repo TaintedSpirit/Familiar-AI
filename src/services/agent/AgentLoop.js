@@ -1,9 +1,9 @@
 import { toolRegistry } from './ToolRegistry';
 import { toolExecutor } from './ToolExecutor';
+import { toolGuardrailController } from './ToolGuardrailController';
 
 const MAX_ITERATIONS = 15;
 
-// Commands that the existing query() handles via fast-path regex — delegate these directly.
 const FAST_PATH_PATTERNS = [
     /^(run|start|execute|begin)\s+(the\s+)?(workflow|sequence|graph)/i,
     /^(start|create|open|new|track)\s*(?:a\s+)?(?:new\s+)?thread/i,
@@ -12,17 +12,17 @@ const FAST_PATH_PATTERNS = [
 ];
 
 class AgentLoop {
-    async run(prompt, conversationHistory, { onStep, onChunk } = {}) {
+    async run(prompt, conversationHistory, { onStep, onChunk, maxIterations, blockedTools, depth = 0, sandboxId = null } = {}) {
         const { llmRouter } = await import('../llm/Router');
+        const limit = maxIterations ?? MAX_ITERATIONS;
+        const blocked = blockedTools ?? new Set();
 
-        // Delegate fast-path commands to the original query() which handles them via regex
         if (FAST_PATH_PATTERNS.some(p => p.test(prompt.trim()))) {
             return llmRouter.query(prompt, conversationHistory, onChunk);
         }
 
         const tools = toolRegistry.getAll();
 
-        // Internal message thread for the LLM (separate from UI store)
         let messages = [
             ...conversationHistory
                 .map(m => {
@@ -35,7 +35,6 @@ class AgentLoop {
             { role: 'user', content: prompt }
         ];
 
-        // Compact history if approaching token limits
         try {
             const { compactIfNeeded } = await import('../memory2/CompactionService');
             onStep?.({ type: 'compacting', active: true });
@@ -43,7 +42,9 @@ class AgentLoop {
             onStep?.({ type: 'compacting', active: false });
         } catch { /* non-fatal */ }
 
-        for (let i = 0; i < MAX_ITERATIONS; i++) {
+        toolGuardrailController.resetForTurn();
+
+        for (let i = 0; i < limit; i++) {
             let response;
             try {
                 response = await llmRouter.queryWithTools(messages, tools, onChunk);
@@ -58,18 +59,56 @@ class AgentLoop {
 
             if (response.type === 'tool_calls' && response.toolCalls?.length) {
                 for (const call of response.toolCalls) {
+                    // Depth-enforced blocked tools (e.g. sub-agents can't spawn sub-agents)
+                    if (blocked.has(call.name)) {
+                        onStep?.({ type: 'tool_result', name: call.name, result: '[BLOCKED]', id: call.id });
+                        messages.push({ role: 'assistant', content: null, toolCalls: [call] });
+                        messages.push({
+                            role: 'tool',
+                            toolCallId: call.id,
+                            toolName: call.name,
+                            content: `[BLOCKED] Tool "${call.name}" is not available in this agent context.`
+                        });
+                        continue;
+                    }
+
+                    // Guardrail loop detection
+                    const guard = toolGuardrailController.beforeCall(call.name, call.args);
+                    if (guard.action === 'halt') {
+                        console.warn('[AgentLoop] Guardrail HALT:', guard.reason);
+                        return { type: 'text', content: `Agent halted: ${guard.reason}`, reply: `Agent halted: ${guard.reason}` };
+                    }
+                    if (guard.action === 'block') {
+                        onStep?.({ type: 'guardrail_block', name: call.name, reason: guard.reason });
+                        messages.push({ role: 'assistant', content: null, toolCalls: [call] });
+                        messages.push({
+                            role: 'tool',
+                            toolCallId: call.id,
+                            toolName: call.name,
+                            content: `[GUARDRAIL] Tool blocked: ${guard.reason}`
+                        });
+                        continue;
+                    }
+                    if (guard.action === 'warn') {
+                        console.warn('[AgentLoop] Guardrail WARN:', guard.reason);
+                        onStep?.({ type: 'guardrail_warn', name: call.name, reason: guard.reason });
+                    }
+
                     onStep?.({ type: 'tool_call', name: call.name, args: call.args, id: call.id });
-
-                    const result = await toolExecutor.run(call.name, call.args);
-
+                    // Sticky sandbox: once forge_create_sandbox returns, subsequent FS ops in this
+                    // loop route to that sandbox until forge_destroy_sandbox or loop exit.
+                    const result = await toolExecutor.run(call.name, call.args, { sandboxId });
+                    if (call.name === 'forge_create_sandbox' && result?.sandboxId) {
+                        sandboxId = result.sandboxId;
+                        onStep?.({ type: 'sandbox_active', sandboxId });
+                    }
+                    if (call.name === 'forge_destroy_sandbox' && result?.success && sandboxId === call.args?.sandboxId) {
+                        sandboxId = null;
+                    }
+                    toolGuardrailController.afterCall(call.name, call.args, result, result?.error);
                     onStep?.({ type: 'tool_result', name: call.name, result, id: call.id });
 
-                    // Append to internal message thread
-                    messages.push({
-                        role: 'assistant',
-                        content: null,
-                        toolCalls: [call]
-                    });
+                    messages.push({ role: 'assistant', content: null, toolCalls: [call] });
                     messages.push({
                         role: 'tool',
                         toolCallId: call.id,
@@ -80,15 +119,10 @@ class AgentLoop {
                 continue;
             }
 
-            // Unexpected response
             break;
         }
 
-        return {
-            type: 'text',
-            content: 'Task complete.',
-            reply: 'Task complete.'
-        };
+        return { type: 'text', content: 'Task complete.', reply: 'Task complete.' };
     }
 }
 

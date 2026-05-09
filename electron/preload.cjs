@@ -63,7 +63,54 @@ contextBridge.exposeInMainWorld('electronAPI', {
     readFile: (filePath) => ipcRenderer.invoke('fs-read-file', filePath),
     writeFile: (filePath, content) => ipcRenderer.invoke('fs-write-file', filePath, content),
     listDir: (dirPath) => ipcRenderer.invoke('fs-list-dir', dirPath),
+    mkdir: (dirPath) => ipcRenderer.invoke('fs-mkdir', dirPath),
+    deleteFile: (filePath) => ipcRenderer.invoke('fs-delete-file', filePath),
     runCommand: (command) => ipcRenderer.invoke('fs-run-command', command),
+    runHook: (hookPath, payload) => ipcRenderer.invoke('hooks:run', hookPath, payload),
+    runCommandIn: (command, cwd) => ipcRenderer.invoke('fs-run-command-in', { command, cwd }),
+    pickDirectory: () => ipcRenderer.invoke('dialog:open-dir'),
+
+    // Claude Code CLI bridge (long-running, streaming)
+    claudeCode: {
+        start: (opts) => ipcRenderer.invoke('claude-code:start', opts),
+        cancel: (pid) => ipcRenderer.invoke('claude-code:cancel', pid),
+        onStdout: (callback) => {
+            const sub = (_e, payload) => callback(payload);
+            ipcRenderer.on('claude-code:stdout', sub);
+            return () => ipcRenderer.removeListener('claude-code:stdout', sub);
+        },
+        onStderr: (callback) => {
+            const sub = (_e, payload) => callback(payload);
+            ipcRenderer.on('claude-code:stderr', sub);
+            return () => ipcRenderer.removeListener('claude-code:stderr', sub);
+        },
+        onExit: (callback) => {
+            const sub = (_e, payload) => callback(payload);
+            ipcRenderer.on('claude-code:exit', sub);
+            return () => ipcRenderer.removeListener('claude-code:exit', sub);
+        },
+    },
+
+    // OpenAI Codex CLI bridge (long-running, streaming)
+    codex: {
+        start: (opts) => ipcRenderer.invoke('codex:start', opts),
+        cancel: (pid) => ipcRenderer.invoke('codex:cancel', pid),
+        onStdout: (callback) => {
+            const sub = (_e, payload) => callback(payload);
+            ipcRenderer.on('codex:stdout', sub);
+            return () => ipcRenderer.removeListener('codex:stdout', sub);
+        },
+        onStderr: (callback) => {
+            const sub = (_e, payload) => callback(payload);
+            ipcRenderer.on('codex:stderr', sub);
+            return () => ipcRenderer.removeListener('codex:stderr', sub);
+        },
+        onExit: (callback) => {
+            const sub = (_e, payload) => callback(payload);
+            ipcRenderer.on('codex:exit', sub);
+            return () => ipcRenderer.removeListener('codex:exit', sub);
+        },
+    },
 
     // Manual Window Dragging (Fix for Compositor Freeze)
     windowDragStart: () => ipcRenderer.send('window-drag-start'),
@@ -71,7 +118,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     windowDragEnd: () => ipcRenderer.send('window-drag-end'),
 
     // Window Management
+    setWindowMode: (mode) => ipcRenderer.send('set-window-mode', mode),
     toggleHUD: (visible) => ipcRenderer.send('toggle-hud', visible),
+    getAllDisplays: () => ipcRenderer.invoke('get-displays'),
+    moveCommandbarToDisplay: (displayId) => ipcRenderer.invoke('move-commandbar-to-display', displayId),
 
     // Context Awareness
     onContextUpdate: (callback) => {
@@ -113,6 +163,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
         disconnect: (serverName) => ipcRenderer.invoke('mcp:disconnect', serverName),
         listTools: (serverName) => ipcRenderer.invoke('mcp:listTools', serverName),
         callTool: (args) => ipcRenderer.invoke('mcp:callTool', args),
+
+        // Phase 2 — resources & prompts
+        listResources: (serverName) => ipcRenderer.invoke('mcp:listResources', serverName),
+        readResource: (args) => ipcRenderer.invoke('mcp:readResource', args),
+        listPrompts: (serverName) => ipcRenderer.invoke('mcp:listPrompts', serverName),
+        getPrompt: (args) => ipcRenderer.invoke('mcp:getPrompt', args),
+
+        // Phase 3 — introspection / status
+        list: () => ipcRenderer.invoke('mcp:list'),
+        getStatus: (serverName) => ipcRenderer.invoke('mcp:getStatus', serverName),
+        onStatus: (cb) => {
+            const sub = (_e, payload) => cb(payload);
+            ipcRenderer.on('mcp:status', sub);
+            return () => ipcRenderer.removeListener('mcp:status', sub);
+        },
+    },
+
+    // Forge — Recursive Self-Evolution
+    forge: {
+        createSandbox:   (args) => ipcRenderer.invoke('forge:create-sandbox', args),
+        destroySandbox:  (args) => ipcRenderer.invoke('forge:destroy-sandbox', args),
+        diffSandbox:     (args) => ipcRenderer.invoke('forge:diff-sandbox', args),
+        runBenchmark:    (args) => ipcRenderer.invoke('forge:run-benchmark', args),
+        applyEvolution:  (args) => ipcRenderer.invoke('forge:apply-evolution', args),
     },
 
     // Global Input Hook
