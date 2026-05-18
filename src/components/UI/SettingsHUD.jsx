@@ -5,6 +5,7 @@ import { cronEngine } from '../../services/watchers/CronEngine';
 import { useSettingsStore } from '../../services/settings/SettingsStore';
 import { useSpeechStore } from '../../services/voice/SpeechStore';
 import { audioGraph } from '../../services/voice/AudioGraph';
+import { audioEngine } from '../../services/voice/AudioEngine';
 import { getKeyLabel } from '../../utils/keymap';
 
 const SettingsHUD = ({ onClose, discordConnected = false }) => {
@@ -467,6 +468,21 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                         </select>
                     </div>
                     <p className="text-xs text-white/30">Select the vocal personality.</p>
+                </div>
+
+                <div className="space-y-2 pt-4">
+                    <button
+                        onClick={() => {
+                            audioEngine.speak({
+                                text: "Audio output is working.",
+                                category: "conversation",
+                                eventId: "test_audio"
+                            });
+                        }}
+                        className="px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg text-xs font-bold transition-colors w-full border border-blue-500/30"
+                    >
+                        Test Audio Output
+                    </button>
                 </div>
             </div>
         </div>

@@ -29,6 +29,8 @@ export const useSettingsStore = create(
             useOpaqueDrag: false,
             useIpcDrag: true, // DEFAULT ON for test phase
 
+            voiceEnabled: true, // ADDED: Voice default
+
             // Actions
             setDragMode: (mode) => set({ dragMode: mode }),
             setDisableAotOnDrag: (val) => set({ disableAotOnDrag: val }),
