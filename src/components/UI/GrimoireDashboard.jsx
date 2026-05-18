@@ -521,7 +521,10 @@ const GrimoireDashboard = ({ onClose, onSend, onOpenSettings }) => {
 
     // ── Module renderer ───────────────────────────────────────────────────────
     const renderModule = () => {
-        if (activeModule === 'comms:chat') return <ChatPanel />;
+        // NOTE: call ChatPanel as a function (not <ChatPanel />) so its JSX inlines
+        // into this component's tree. Rendering as a component would unmount/remount
+        // the textarea on every keystroke (function identity changes each render).
+        if (activeModule === 'comms:chat') return ChatPanel();
         if (activeModule === 'forge:hub') return (
             <React.Suspense fallback={<ModuleLoader />}>
                 <WorkspaceHub onOpenForge={setActiveModule} />

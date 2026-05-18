@@ -281,6 +281,36 @@ class AudioGraph {
         this.playQueue = [];
         this.isPlayingTTS = false;
         useSpeechStore.getState().setIsSpeaking(false);
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+    }
+
+    async speakLocal(text) {
+        if (!window.speechSynthesis) return;
+        return new Promise((resolve) => {
+            this.isPlayingTTS = true;
+            useSpeechStore.getState().setIsSpeaking(true);
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            const voiceId = useSpeechStore.getState().voiceId;
+            const voices = window.speechSynthesis.getVoices();
+            
+            // Try to match a preferred voice if possible, else use default
+            const preferred = voices.find(v => v.name.toLowerCase().includes(voiceId.toLowerCase()));
+            if (preferred) utterance.voice = preferred;
+
+            utterance.onend = () => {
+                this.isPlayingTTS = false;
+                useSpeechStore.getState().setIsSpeaking(false);
+                resolve();
+            };
+            utterance.onerror = () => {
+                this.isPlayingTTS = false;
+                useSpeechStore.getState().setIsSpeaking(false);
+                resolve();
+            };
+
+            window.speechSynthesis.speak(utterance);
+        });
     }
 }
 

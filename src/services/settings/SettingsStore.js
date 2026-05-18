@@ -151,6 +151,14 @@ export const useSettingsStore = create(
             requireWakeWord: true,
             setRequireWakeWord: (val) => set({ requireWakeWord: val }),
 
+            // Claude Subscription CLI provider — routes chat through the local
+            // `claude` binary so the user's Pro/Max subscription is consumed
+            // instead of API credits. Login state is set after `claude auth status`.
+            claudeCliBinPath: 'claude',
+            claudeCliLoggedIn: false,
+            setClaudeCliBinPath: (val) => set({ claudeCliBinPath: val }),
+            setClaudeCliLoggedIn: (val) => set({ claudeCliLoggedIn: val }),
+
             // Claude Code CLI integration — used by the run_claude_code tool.
             claudeCodePath: 'claude',
             claudeCodeCwd: '',

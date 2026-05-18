@@ -2,6 +2,7 @@ import { GeminiAdapter } from "./providers/GeminiAdapter";
 import { OpenAIAdapter } from "./providers/OpenAIAdapter";
 import { AnthropicAdapter } from "./providers/AnthropicAdapter";
 import { OllamaAdapter } from "./providers/OllamaAdapter";
+import { ClaudeCLIAdapter } from "./providers/ClaudeCLIAdapter";
 import { buildChatPrompt, buildAgentPrompt } from "./SystemPromptBuilder";
 import { parseResponse } from "./ResponseParser";
 import { matchFastPath, detectIntent } from "./IntentClassifier";
@@ -30,6 +31,7 @@ const ADAPTERS = {
     anthropic:   new AnthropicAdapter(),
     ollama:      new OllamaAdapter('ollama'),
     'lm-studio': new OllamaAdapter('lm-studio'),
+    'claude-cli': new ClaudeCLIAdapter(),
 };
 
 export class LLMRouter {
@@ -75,7 +77,10 @@ export class LLMRouter {
                 return { type: 'text', content: `Provider "${settings.aiProvider}" is not configured.` };
             }
             if (!adapter.isConfigured(settings)) {
-                return { type: 'text', content: `Please enter your ${settings.aiProvider} API Key in the Settings menu.` };
+                const msg = settings.aiProvider === 'claude-cli'
+                    ? 'Claude CLI is not authenticated. Open Settings and click "Login via Browser".'
+                    : `Please enter your ${settings.aiProvider} API Key in the Settings menu.`;
+                return { type: 'text', content: msg };
             }
 
             // Reset fallback state on fresh call
@@ -139,7 +144,10 @@ export class LLMRouter {
             return { type: 'text', content: 'Tool use requires a configured provider.' };
         }
         if (!adapter.isConfigured(settings)) {
-            return { type: 'text', content: `${settings.aiProvider} API key required for agent mode.` };
+            const msg = settings.aiProvider === 'claude-cli'
+                ? 'Claude CLI is not authenticated. Open Settings and click "Login via Browser".'
+                : `${settings.aiProvider} API key required for agent mode.`;
+            return { type: 'text', content: msg };
         }
 
         return adapter.chatWithTools(messages, sortedTools, systemPrompt, settings);

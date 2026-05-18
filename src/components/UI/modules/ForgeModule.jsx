@@ -116,7 +116,10 @@ const EditorFallback = () => (
 
 // ─── Main module ──────────────────────────────────────────────────────────────
 const ForgeModule = ({ activeTab }) => {
-    const { claudeCodeCwd, claudeCodePath, claudeCodePermissionMode } = useSettingsStore();
+    const {
+        claudeCodeCwd, claudeCodePath, claudeCodePermissionMode,
+        aiProvider, claudeCliBinPath, claudeCliLoggedIn,
+    } = useSettingsStore();
 
     // ── Tab ──────────────────────────────────────────────────────────────────
     const [localTab, setLocalTab] = useState(activeTab ?? 'edit');
@@ -362,6 +365,30 @@ const ForgeModule = ({ activeTab }) => {
             : pairInput.trim();
         if (!task.trim()) return;
 
+        // Pick the binary based on the active provider. When the user has
+        // selected the Claude subscription CLI, route Forge through the same
+        // authenticated binary so it consumes their subscription.
+        const useSubscription = aiProvider === 'claude-cli';
+        const binPath = useSubscription
+            ? (claudeCliBinPath || 'claude')
+            : (claudeCodePath || 'claude');
+
+        // Auth gate: under the subscription provider, refuse to spawn until
+        // the user has logged in (otherwise `claude --print` will print a
+        // login banner and exit, which looks like a silent failure).
+        if (useSubscription && !claudeCliLoggedIn) {
+            const sessId = `sess_${Date.now()}`;
+            setSessions(prev => [{
+                id: sessId, task, startedAt: Date.now(),
+                status: 'error', stdout: '',
+                stderr: 'Claude CLI not authenticated. Open Grimoire → Systems → Auth and click "Login via Browser".',
+                exitCode: -1,
+            }, ...prev]);
+            setActiveSessId(sessId);
+            setLocalTab('sessions');
+            return;
+        }
+
         const sessId = `sess_${Date.now()}`;
         runnersRef.current[sessId] = new ClaudeCodeRunner();
         setSessions(prev => [{
@@ -375,7 +402,11 @@ const ForgeModule = ({ activeTab }) => {
         const result = await runnersRef.current[sessId].run(task, {
             cwd: claudeCodeCwd || undefined,
             permissionMode: claudeCodePermissionMode || 'acceptEdits',
-            binPath: claudeCodePath || 'claude',
+            binPath,
+            // Pipe the prompt over stdin. Without this, cmd.exe truncates
+            // multi-line argv at the first newline on Windows (the task
+            // contains "File: <path>\n\n<prompt>").
+            viaStdin: true,
             onStdout: (_, total) => setSessions(prev =>
                 prev.map(s => s.id === sessId ? { ...s, stdout: total } : s)),
             onStderr: (_, total) => setSessions(prev =>
@@ -398,7 +429,8 @@ const ForgeModule = ({ activeTab }) => {
                 setLocalTab('edit');
             }
         }
-    }, [pairInput, openFile, claudeCodeCwd, claudeCodePath, claudeCodePermissionMode]); // editorContent read via saveStateRef post-await
+    }, [pairInput, openFile, claudeCodeCwd, claudeCodePath, claudeCodePermissionMode,
+        aiProvider, claudeCliBinPath, claudeCliLoggedIn]); // editorContent read via saveStateRef post-await
 
     // ── Cancel session ────────────────────────────────────────────────────────
     const cancelSession = useCallback((id) => {
@@ -737,7 +769,11 @@ const ForgeModule = ({ activeTab }) => {
                                             <button
                                                 onClick={handleRunCC}
                                                 disabled={pairBusy || !pairInput.trim()}
-                                                title="Run with Claude Code CLI"
+                                                title={aiProvider === 'claude-cli'
+                                                    ? (claudeCliLoggedIn
+                                                        ? 'Run with Claude Code CLI (using your subscription)'
+                                                        : 'Claude CLI: not authenticated — login in Grimoire → Systems → Auth')
+                                                    : 'Run with Claude Code CLI (uses configured binary path)'}
                                                 className="flex items-center justify-center gap-1 px-2 py-1 rounded text-[9px] transition-colors"
                                                 style={{
                                                     background: 'rgba(74,127,165,0.1)',

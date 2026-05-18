@@ -51,7 +51,7 @@ const CustomSelect = ({ value, onChange, options, className = '' }) => {
     );
 };
 
-const SettingsHUD = ({ onClose, discordConnected = false }) => {
+const SettingsHUD = ({ onClose, discordConnected = false, discordConnecting = false, discordError = null }) => {
     const {
         aiProvider, setAiProvider,
         model, setModel,
@@ -184,12 +184,14 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                         if (v === 'openai') setModel('gpt-4o');
                         else if (v === 'gemini') setModel('gemini-pro');
                         else if (v === 'anthropic') setModel('claude-3-sonnet-20240229');
+                        else if (v === 'claude-cli') setModel('claude (subscription)');
                         else setModel('mistral-7b');
                     }}
                     options={[
                         { value: 'gemini', label: 'Google Gemini (Cloud)' },
                         { value: 'openai', label: 'OpenAI (Cloud)' },
                         { value: 'anthropic', label: 'Anthropic (Claude)' },
+                        { value: 'claude-cli', label: 'Claude (Subscription CLI)' },
                         { value: 'ollama', label: 'Ollama (Local)' },
                         { value: 'lm-studio', label: 'LM Studio (Local)' },
                     ]}
@@ -237,6 +239,14 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                         className="w-full bg-[#1a1a1a] border border-white/10 rounded-lg px-4 py-3 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-colors placeholder-white/10 font-mono text-sm"
                     />
                     <p className="text-xs text-white/30">Stored locally in your browser.</p>
+                </div>
+            )}
+
+            {aiProvider === 'claude-cli' && (
+                <div className="bg-purple-500/5 border border-purple-500/20 rounded-lg px-4 py-3">
+                    <p className="text-xs text-white/60">
+                        Configure binary path & login in <span className="text-purple-300 font-medium">Grimoire → Systems → Auth</span>.
+                    </p>
                 </div>
             )}
 
@@ -1165,20 +1175,39 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
             <div className="space-y-6">
                 {/* Status Banner */}
                 <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors ${
-                    discordConnected
-                        ? 'bg-green-500/10 border-green-500/20'
-                        : 'bg-white/5 border-white/10'
+                    discordConnected ? 'bg-green-500/10 border-green-500/20'
+                    : discordConnecting ? 'bg-amber-500/10 border-amber-500/20'
+                    : discordError ? 'bg-red-500/10 border-red-500/20'
+                    : 'bg-white/5 border-white/10'
                 }`}>
-                    <Plug className={`w-4 h-4 shrink-0 ${discordConnected ? 'text-green-400' : 'text-white/30'}`} />
+                    <Plug className={`w-4 h-4 shrink-0 ${
+                        discordConnected ? 'text-green-400'
+                        : discordConnecting ? 'text-amber-400'
+                        : discordError ? 'text-red-400'
+                        : 'text-white/30'
+                    }`} />
                     <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium ${discordConnected ? 'text-green-300' : 'text-white/50'}`}>
-                            {discordConnected ? 'Connected' : 'Disconnected'}
+                        <p className={`text-sm font-medium ${
+                            discordConnected ? 'text-green-300'
+                            : discordConnecting ? 'text-amber-300'
+                            : discordError ? 'text-red-300'
+                            : 'text-white/50'
+                        }`}>
+                            {discordConnected ? 'Connected' : discordConnecting ? 'Connecting…' : discordError ? 'Error' : 'Disconnected'}
                         </p>
-                        <p className="text-[10px] text-white/30">
-                            {discordConnected ? 'Your companion is reachable on Discord.' : 'Enable the bot and add a token to connect.'}
+                        <p className="text-[10px] text-white/30 truncate">
+                            {discordConnected ? 'Your companion is reachable on Discord.'
+                            : discordConnecting ? 'Waiting for Discord handshake…'
+                            : discordError ? discordError
+                            : 'Enable the bot and add a token to connect.'}
                         </p>
                     </div>
-                    <div className={`w-2 h-2 rounded-full shrink-0 ${discordConnected ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.6)]' : 'bg-white/20'}`} />
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${
+                        discordConnected ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.6)]'
+                        : discordConnecting ? 'bg-amber-400 animate-pulse'
+                        : discordError ? 'bg-red-400'
+                        : 'bg-white/20'
+                    }`} />
                 </div>
 
                 {/* Enable Toggle */}
@@ -1447,17 +1476,33 @@ const SettingsHUD = ({ onClose, discordConnected = false }) => {
                 </div>
 
                 <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors ${
-                    discordConnected
-                        ? 'bg-green-500/10 border-green-500/20'
-                        : 'bg-white/5 border-white/10'
+                    discordConnected ? 'bg-green-500/10 border-green-500/20'
+                    : discordConnecting ? 'bg-amber-500/10 border-amber-500/20'
+                    : discordError ? 'bg-red-500/10 border-red-500/20'
+                    : 'bg-white/5 border-white/10'
                 }`}>
-                    <Plug className={`w-4 h-4 shrink-0 ${discordConnected ? 'text-green-400' : 'text-white/30'}`} />
+                    <Plug className={`w-4 h-4 shrink-0 ${
+                        discordConnected ? 'text-green-400'
+                        : discordConnecting ? 'text-amber-400'
+                        : discordError ? 'text-red-400'
+                        : 'text-white/30'
+                    }`} />
                     <div className="flex-1 min-w-0">
-                        <p className={`text-sm font-medium ${discordConnected ? 'text-green-300' : 'text-white/50'}`}>
-                            {discordConnected ? 'Connected' : 'Disconnected'}
+                        <p className={`text-sm font-medium ${
+                            discordConnected ? 'text-green-300'
+                            : discordConnecting ? 'text-amber-300'
+                            : discordError ? 'text-red-300'
+                            : 'text-white/50'
+                        }`}>
+                            {discordConnected ? 'Connected' : discordConnecting ? 'Connecting…' : discordError ? 'Error' : 'Disconnected'}
                         </p>
                     </div>
-                    <div className={`w-2 h-2 rounded-full shrink-0 ${discordConnected ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.6)]' : 'bg-white/20'}`} />
+                    <div className={`w-2 h-2 rounded-full shrink-0 ${
+                        discordConnected ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.6)]'
+                        : discordConnecting ? 'bg-amber-400 animate-pulse'
+                        : discordError ? 'bg-red-400'
+                        : 'bg-white/20'
+                    }`} />
                 </div>
 
                 <div className="flex items-center justify-between p-4 bg-white/5 rounded-xl border border-white/10">

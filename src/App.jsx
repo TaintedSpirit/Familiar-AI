@@ -267,7 +267,7 @@ function App() {
   }, [messages]);
 
   // --- Discord Bridge ---
-  const { isConnected: discordConnected } = useDiscordBridge();
+  const { isConnected: discordConnected, isConnecting: discordConnecting, connectionError: discordError } = useDiscordBridge();
 
   // --- Telegram / Channel Bridge ---
   const { telegramEnabled, telegramBotToken, telegramUserId } = useSettingsStore();
@@ -425,7 +425,13 @@ function App() {
 
         if (voiceMode === 'always-listening' || voiceMode === 'push-to-talk') {
           llmRouter.synthesizeAudio(replyText).then(audio => {
-            if (audio) audioGraph.playAudio(audio);
+            if (audio) {
+              audioGraph.playAudio(audio);
+            } else {
+              // FALLBACK: Local Browser TTS
+              console.log("[App] No cloud TTS available, falling back to local voice.");
+              audioGraph.speakLocal(replyText);
+            }
           });
         }
 
@@ -601,7 +607,7 @@ function App() {
 
       {showSettings && (
         <div className="pointer-events-auto">
-          <SettingsHUD onClose={() => setShowSettings(false)} discordConnected={discordConnected} />
+          <SettingsHUD onClose={() => setShowSettings(false)} discordConnected={discordConnected} discordConnecting={discordConnecting} discordError={discordError} />
         </div>
       )}
 

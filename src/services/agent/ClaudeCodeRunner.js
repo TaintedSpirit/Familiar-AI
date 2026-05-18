@@ -66,6 +66,7 @@ export class ClaudeCodeRunner {
                 cwd: opts.cwd,
                 permissionMode: opts.permissionMode,
                 binPath: opts.binPath,
+                viaStdin: opts.viaStdin,
             }).then(res => {
                 if (res?.error) {
                     cleanup();

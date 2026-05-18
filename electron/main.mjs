@@ -233,15 +233,31 @@ app.whenReady().then(async () => {
     ipcMain.handle('soul-get-dir', () => getSoulDir());
 
     // ─── Discord Bot IPC ─────────────────────────────────────────────────────
-    ipcMain.handle('discord:start', (_e, token, companionChannels) => {
-        discordBot.start(token, companionChannels, (msgData) => {
-            // Forward incoming Discord messages to whichever renderer window is active
+    ipcMain.handle('discord:start', async (_e, token, companionChannels) => {
+        const sendStatus = (status) => {
             const target = companionWindow || commandBarWindow;
             if (target && !target.isDestroyed()) {
-                target.webContents.send('discord:message', msgData);
+                target.webContents.send('discord:status', { status });
             }
-        });
-        return true;
+        };
+        try {
+            await discordBot.start(
+                token,
+                companionChannels,
+                (msgData) => {
+                    // Forward incoming Discord messages to whichever renderer window is active
+                    const target = companionWindow || commandBarWindow;
+                    if (target && !target.isDestroyed()) {
+                        target.webContents.send('discord:message', msgData);
+                    }
+                },
+                sendStatus
+            );
+            return { ok: true };
+        } catch (err) {
+            console.error('[Discord] Start failed:', err.message);
+            return { ok: false, error: err.message };
+        }
     });
 
     ipcMain.handle('discord:stop', () => {
@@ -358,20 +374,36 @@ app.whenReady().then(async () => {
     // Long-running subprocess (minutes); cannot reuse 30s exec channel.
     const claudeCodeProcs = new Map(); // pid → ChildProcess
 
-    ipcMain.handle('claude-code:start', async (event, { task, cwd, permissionMode, binPath }) => {
+    ipcMain.handle('claude-code:start', async (event, { task, cwd, permissionMode, binPath, viaStdin }) => {
         if (!task) return { error: 'task is required' };
         const bin = binPath || 'claude';
         const mode = permissionMode || 'acceptEdits';
-        const args = ['--print', '--permission-mode', mode, task];
+        // viaStdin: pipe `task` over stdin instead of passing it as a positional
+        // arg. Required for multi-line prompts on Windows because cmd.exe treats
+        // newlines in argv as command terminators (truncates the prompt).
+        const args = viaStdin
+            ? ['--print', '--permission-mode', mode]
+            : ['--print', '--permission-mode', mode, task];
         let child;
         try {
             child = spawn(bin, args, {
                 cwd: cwd || undefined,
                 shell: process.platform === 'win32', // .cmd shim on Windows
                 env: process.env,
+                stdio: viaStdin ? ['pipe', 'pipe', 'pipe'] : undefined,
             });
         } catch (e) {
             return { error: `spawn failed: ${e.message}` };
+        }
+
+        if (viaStdin && child.stdin) {
+            try {
+                child.stdin.write(task);
+                child.stdin.end();
+            } catch (e) {
+                // Surface, but don't kill the spawn — let the exit handler report it
+                console.warn('[claude-code:start] stdin write failed:', e.message);
+            }
         }
 
         const pid = child.pid;
@@ -424,6 +456,48 @@ app.whenReady().then(async () => {
             return { ok: true };
         } catch (e) {
             return { ok: false, reason: e.message };
+        }
+    });
+
+    // ─── Claude CLI auth helpers (subscription provider) ─────────────────────
+    // `claude /login` opens an OAuth browser flow and needs a real TTY, so we
+    // spawn it in a visible terminal window rather than reusing claude-code:start.
+    ipcMain.handle('claude-code:login', async (_e, { binPath } = {}) => {
+        const bin = (binPath && String(binPath).trim()) || 'claude';
+        try {
+            if (process.platform === 'win32') {
+                // `start` is a cmd builtin; the empty "" is the window title arg.
+                spawn('cmd.exe', ['/c', 'start', '""', 'cmd', '/k', `${bin} /login`], {
+                    detached: true,
+                    stdio: 'ignore',
+                    shell: false,
+                }).unref();
+            } else if (process.platform === 'darwin') {
+                const script = `tell application "Terminal" to do script "${bin} /login"`;
+                spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref();
+            } else {
+                // Best-effort linux fallback
+                spawn('x-terminal-emulator', ['-e', `${bin} /login`], { detached: true, stdio: 'ignore' }).unref();
+            }
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, error: e.message };
+        }
+    });
+
+    // Lightweight, one-shot status probe — runs `claude auth status` and reports
+    // whether the user is logged in. Called by Settings to drive the green/red dot.
+    ipcMain.handle('claude-code:auth-status', async (_e, { binPath } = {}) => {
+        const bin = (binPath && String(binPath).trim()) || 'claude';
+        const command = process.platform === 'win32' ? `${bin} auth status` : `"${bin}" auth status`;
+        try {
+            const { stdout, stderr } = await execPromise(command, { timeout: 8000, windowsHide: true });
+            const blob = `${stdout}\n${stderr}`.toLowerCase();
+            const loggedIn = /logged ?in|authenticated|subscription|account:/i.test(blob)
+                && !/not (logged|authenticated)|no.*account|please.*login/i.test(blob);
+            return { ok: true, loggedIn, output: (stdout + stderr).trim() };
+        } catch (err) {
+            return { ok: false, loggedIn: false, error: err.message, output: (err.stdout || '') + (err.stderr || '') };
         }
     });
 

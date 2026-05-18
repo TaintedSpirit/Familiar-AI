@@ -18,6 +18,8 @@ const SystemsModule = ({ activeTab }) => {
         geminiApiKey, setGeminiApiKey,
         openaiApiKey, setOpenaiApiKey,
         anthropicApiKey, setAnthropicApiKey,
+        claudeCliBinPath, setClaudeCliBinPath,
+        claudeCliLoggedIn, setClaudeCliLoggedIn,
         authCooldowns, setAuthCooldowns,
         maxTokens, setMaxTokens,
         presencePenalty, setPresencePenalty,
@@ -430,6 +432,63 @@ const SystemsModule = ({ activeTab }) => {
                                     />
                                 </div>
                             ))}
+                        </div>
+
+                        <div className="text-[9px] uppercase tracking-widest text-white/30 mt-4 mb-1">Claude (Subscription CLI)</div>
+                        <div className="bg-white/5 border border-white/5 rounded-xl p-3 space-y-3">
+                            <div className="text-[10px] text-white/40 leading-snug">
+                                Use your Claude Pro/Max subscription instead of API credits. Routes chat through the local <span className="font-mono text-white/60">claude</span> CLI binary.
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <div className="text-[10px] text-white/50">Binary Path</div>
+                                <input
+                                    type="text"
+                                    value={claudeCliBinPath || ''}
+                                    onChange={e => setClaudeCliBinPath(e.target.value)}
+                                    placeholder="claude"
+                                    className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white/80 text-xs font-mono focus:outline-none focus:border-white/20"
+                                />
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <span className={`inline-block w-2 h-2 rounded-full ${claudeCliLoggedIn ? 'bg-emerald-400' : 'bg-red-400'}`} />
+                                <span className="text-[10px] text-white/60">
+                                    {claudeCliLoggedIn ? 'Authenticated — using your subscription' : 'Not authenticated'}
+                                </span>
+                            </div>
+
+                            <div className="flex gap-2">
+                                <button
+                                    type="button"
+                                    onClick={async () => {
+                                        try { await window.electronAPI?.claudeCode?.login?.({ binPath: claudeCliBinPath || 'claude' }); }
+                                        catch (e) { console.error('claude login spawn failed', e); }
+                                    }}
+                                    className="flex-1 bg-purple-600/80 hover:bg-purple-500 text-white text-[11px] font-medium px-3 py-2 rounded-lg transition-colors"
+                                >
+                                    Login via Browser
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={async () => {
+                                        try {
+                                            const res = await window.electronAPI?.claudeCode?.authStatus?.({ binPath: claudeCliBinPath || 'claude' });
+                                            setClaudeCliLoggedIn(!!res?.loggedIn);
+                                        } catch (e) {
+                                            console.error('claude auth status failed', e);
+                                            setClaudeCliLoggedIn(false);
+                                        }
+                                    }}
+                                    className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-white text-[11px] font-medium px-3 py-2 rounded-lg transition-colors"
+                                >
+                                    Verify
+                                </button>
+                            </div>
+
+                            <div className="text-[9px] text-white/25 italic">
+                                Requires the Claude Code CLI installed (<span className="font-mono">npm install -g @anthropic-ai/claude-code</span>). After logging in, click Verify.
+                            </div>
                         </div>
 
                         <div className="text-[9px] uppercase tracking-widest text-white/30 mt-4 mb-1">Auth Cooldowns (Backoff)</div>

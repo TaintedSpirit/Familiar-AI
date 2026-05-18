@@ -65,6 +65,14 @@ export const MODEL_CATALOG = [
         label: 'Claude Haiku 4.5',
         group: 'Claude',
     },
+    {
+        id: 'claude-cli-subscription',
+        provider: 'claude-cli',
+        modelId: 'claude-cli',
+        label: 'Claude (Subscription)',
+        badge: 'Subscription',
+        group: 'Claude',
+    },
 
     // ── OpenAI ────────────────────────────────────────────────────────────────
     {
@@ -151,4 +159,5 @@ export const BADGE_COLORS = {
     Thinking:  { bg: 'rgba(148,103,189,0.2)', border: 'rgba(148,103,189,0.4)', text: '#c09fd8' },
     Reasoning: { bg: 'rgba(148,103,189,0.2)', border: 'rgba(148,103,189,0.4)', text: '#c09fd8' },
     Local:     { bg: 'rgba(74,174,74,0.15)',  border: 'rgba(74,174,74,0.35)',  text: '#7dca7d' },
+    Subscription: { bg: 'rgba(201,168,76,0.18)', border: 'rgba(201,168,76,0.4)', text: '#d8be7c' },
 };

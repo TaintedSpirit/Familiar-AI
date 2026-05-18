@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     claudeCode: {
         start: (opts) => ipcRenderer.invoke('claude-code:start', opts),
         cancel: (pid) => ipcRenderer.invoke('claude-code:cancel', pid),
+        login: (opts) => ipcRenderer.invoke('claude-code:login', opts || {}),
+        authStatus: (opts) => ipcRenderer.invoke('claude-code:auth-status', opts || {}),
         onStdout: (callback) => {
             const sub = (_e, payload) => callback(payload);
             ipcRenderer.on('claude-code:stdout', sub);
@@ -144,6 +146,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         const subscription = (_event, data) => callback(data);
         ipcRenderer.on('discord:message', subscription);
         return () => ipcRenderer.removeListener('discord:message', subscription);
+    },
+    onDiscordStatus: (callback) => {
+        const subscription = (_event, data) => callback(data);
+        ipcRenderer.on('discord:status', subscription);
+        return () => ipcRenderer.removeListener('discord:status', subscription);
     },
 
     // Webhook Gateway

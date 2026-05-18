@@ -24,6 +24,8 @@ function clearHistory(key) {
 
 export function useDiscordBridge() {
     const [isConnected, setIsConnected] = useState(false);
+    const [isConnecting, setIsConnecting] = useState(false);
+    const [connectionError, setConnectionError] = useState(null);
     const [sessionCount, setSessionCount] = useState(0);
     const processingRef = useRef(new Set());
     // Per-session think levels: sessionKey -> 'low' | 'medium' | 'high'
@@ -39,18 +41,48 @@ export function useDiscordBridge() {
         if (!hasDiscordAPI) return;
 
         if (discordEnabled && discordBotToken) {
+            setIsConnecting(true);
+            setConnectionError(null);
             api.discordStart(discordBotToken, discordCompanionChannels)
-                .then(() => setIsConnected(true))
+                .then((result) => {
+                    setIsConnecting(false);
+                    if (result?.ok) {
+                        setIsConnected(true);
+                    } else {
+                        setIsConnected(false);
+                        setConnectionError(result?.error ?? 'Unknown error');
+                    }
+                })
                 .catch((err) => {
                     console.error('[DiscordBridge] Start failed:', err);
+                    setIsConnecting(false);
                     setIsConnected(false);
+                    setConnectionError(err?.message ?? 'Unknown error');
                 });
         } else {
             api.discordStop()
-                .then(() => setIsConnected(false))
+                .then(() => {
+                    setIsConnected(false);
+                    setIsConnecting(false);
+                    setConnectionError(null);
+                })
                 .catch(() => {});
         }
     }, [discordEnabled, discordBotToken, discordCompanionChannels, hasDiscordAPI]);
+
+    // Reflect live status changes (post-connect disconnects, reconnects)
+    useEffect(() => {
+        if (!hasDiscordAPI || !api?.onDiscordStatus) return;
+        const unsub = api.onDiscordStatus((data) => {
+            if (data?.status === 'connected') {
+                setIsConnected(true);
+                setConnectionError(null);
+            } else if (data?.status === 'disconnected') {
+                setIsConnected(false);
+            }
+        });
+        return unsub;
+    }, [hasDiscordAPI]);
 
     // Update companion channels live without restarting
     useEffect(() => {
@@ -169,5 +201,5 @@ export function useDiscordBridge() {
         return cleanup;
     }, []);
 
-    return { isConnected, sessionCount };
+    return { isConnected, isConnecting, connectionError, sessionCount };
 }
